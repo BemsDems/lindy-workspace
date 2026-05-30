@@ -1,239 +1,102 @@
-"""Deterministic letter post-processing — model-agnostic form guarantees.
-
-Rationale: prompts only *ask* the model to behave; weak models ignore them.
-This module *enforces* the parts of the contract that are purely structural
-(stack dumps, weak endings, signatures, stray meta-lines) so the output
-form does not depend on how obedient the LLM is.
-
-It runs BEFORE the validator: clean first, then validate, so the validator
-doesn't burn a retry on something we would have removed anyway.
-
-It only removes/trims — it never invents content. Anything semantic
-(causal endings, natural tone) stays the model's job; the validator can
-still reject those, but form-level junk never reaches it.
-"""
-
 from __future__ import annotations
 
+import logging
 import re
 from typing import List
 
+logger = logging.getLogger(__name__)
 
-# Sentence-initial markers that introduce a tech-stack dump.
-# "Стек:" is an unambiguous dump lead — drop the whole sentence on match.
-_STACK_LEAD_RE = re.compile(
-    r"(?:^|(?<=[.!?]\s))\s*"
-    r"(?:стек|техническ[ий]{2}с\*стек|тех\.?\*стек|стек\s*технологий)\s*:?\s*",
-    re.IGNORECASE,
-)
+_DECIMAL_SENTINEL = "\x00DEC\x00"
+_DECIMAL_RE = re.compile(r"(\d+)\.(\d+)")
 
-# Verb leads ("работал с", "использовал") only count as a dump when followed
-# by an actual list (handled via _STACK_LIST_RE below), so inline mentions
-# like "использовал gRPC-интеграцию" are preserved.
-_VERB_LEAD_RE = re.compile(
-    r"(?:^|(?<=[.!?]\s))\s*"
-    r"(?:работал(?:а)?\s*с|использовал(?:а)?(?:\s*следующ[ие]{2})?(?:\s*технологии)?)\s*:?\s*",
-    re.IGNORECASE,
-)
-
-# A run that looks like a comma/slash-separated list of >=5 capitalized
-# tech tokens — a stack dump even without a "Стек:" lead. Kept as a fast
-# pre-check; the density detector below is the robust path.
-_TECH_TOKEN = r"[A-Z][A-Za-z0-9./+]+(?:\s[A-Z][A-Za-z0-9./+]+)*?"
-_STACK_LIST_RE = re.compile(
-    rf"(?:{_TECH_TOKEN})(?:\s*[,/]\s*(?:{_TECH_TOKEN})){{4,}}\.?",
-)
-
-# Known tech vocabulary (reused from the validator — single source of truth)
-# plus a few multi-word/compound forms common in these letters. Used to count
-# how "tech-dense" a sentence is, which catches dumps that the comma-list regex
-# misses (slashes, spaces, "и" before the last item, e.g.
-# "Clean Architecture, BLoC/Cubit, Dio, REST API, gRPC, Protobuf и Drift").
-try:  # avoid hard import cycle at module load
-    from .validator import BASE_ALLOWED_TECH as _VALIDATOR_TECH
-except Exception:  # pragma: no cover
-    _VALIDATOR_TECH = set()
-
-_EXTRA_TECH = {
-    "Dio", "Drift", "Sentri", "Protobuf", "Freezed", "Branch", "MapKit",
-    "Injectable", "GetIt", "Isar", "Hive", "Riverpod", "Provider",
-}
-_KNOWN_TECH_LOWER = {t.lower() for t in (_VALIDATOR_TECH | _EXTRA_TECH)}
-
-# Multi-word tech terms that should count as a single tech token in a run.
-_MULTIWORD_TECH = [
-    "clean architecture", "rest api", "secure storage", "auto route",
-    "deep links", "branch sdk", "yandex mapkit", "ci/cd",
-]
-
-# Connectors allowed *between* tech tokens inside a stack run.
-_RUN_CONNECTOR_RE = re.compile(r"^\s*(?:,|/|;|—|-|\bи\b|\bи\s+|\bа\b|\bот\b)", re.IGNORECASE)
-
-
-def _longest_tech_run(sentence: str) -> int:
-    """Length of the longest chain of tech tokens separated only by connectors.
-
-    A stack dump reads "A, B, C, D и E" — tech tokens glued by commas/slashes/
-    "и". Real prose breaks the chain with verbs/nouns ("интегрировал Deep Links
-    и Branch SDK для навигации"), so its longest run stays short (<=2-3).
-    """
-    s = sentence
-    # Mask multi-word tech as single tokens so "Clean Architecture" counts once.
-    low = s.lower()
-    for mw in _MULTIWORD_TECH:
-        idx = low.find(mw)
-        while idx != -1:
-            s = s[:idx] + ("X" * len(mw)) + s[idx + len(mw):]
-            low = s.lower()
-            idx = low.find(mw, idx + len(mw))
-    tokens = re.findall(r"[^\s,;/—\-]+|[,;/—\-]", s)
-
-    best = cur = 0
-    expect_token = True
-    for tok in tokens:
-        if expect_token:
-            head = tok.split("/")[0].lower().strip("().")
-            is_tech = (
-                tok.startswith("X" * 4)  # masked multi-word tech
-                or head in _KNOWN_TECH_LOWER
-            )
-            if is_tech:
-                cur += 1
-                best = max(best, cur)
-                expect_token = False
-            else:
-                cur = 0
-                expect_token = True
-        else:
-            # Between tokens we must see a connector to continue the run.
-            if tok in (",", "/", ";", "—", "-") or tok.lower() == "и":
-                expect_token = True
-            else:
-                cur = 0
-                expect_token = True
-    return best
-
-
-def _is_stack_dump_sentence(sentence: str) -> bool:
-    """True if the sentence contains a long uninterrupted run of tech tokens
-    (a stack dump), e.g. 'Clean Architecture, BLoC/Cubit, Dio, REST API, gRPC,
-    Protobuf и Drift'. Prose with a couple of inline technologies has a short
-    run and is preserved.
-    """
-    return _longest_tech_run(sentence) >= 5
-
-# Weak closing patterns — narrowly targeted at specific cliché phrasings.
-#
-# Old version matched ANY sentence starting with "готов(а)" or "буду рад(а)",
-# which killed live finals from FINALIZER_SYSTEM such as:
-#   - "Готов показать архитектуру [проекта] на коротком созвоне."
-#   - "Готов привести метрики по…"
-# New version matches ONLY the specific cliché bodies, never the open
-# "готов <something concrete>" constructions.
-#
-# Each pattern is a full-sentence match (lead + body + terminator).
 _WEAK_ENDING_PATTERNS = [
-    # "Готов(а) обсудить задачи/детали/подробности..."
-    r"готов(?:а)?\s+обсудить\s+(?:задачи|детали|подробности|любые\s+вопросы)\b[^.!?]*[.!?]",
-    # "Готов(а) применить (свои|накопленные) (знания|опыт|навыки)..."
-    r"готов(?:а)?\s+применить\b[^.!?]*[.!?]",
-    # "Готов(а) приступить к..."
-    r"готов(?:а)?\s+приступить\b[^.!?]*[.!?]",
-    # "Готов(а) рассказать подробнее/больше..."
-    r"готов(?:а)?\s+рассказать\s+(?:подробнее|больше)\b[^.!?]*[.!?]",
-    # "Готов(а) ответить на (любые) вопросы..."
-    r"готов(?:а)?\s+ответить\s+на\s+(?:любые\s+)?вопрос\w*\b[^.!?]*[.!?]",
-    # "Готов(а) подробнее рассказать о..." (mirror form)
-    r"готов(?:а)?\s+подробнее\s+рассказать\b[^.!?]*[.!?]",
-    # "Буду рад(а) обсудить/пообщаться/услышать/любой обратной связи/возможности..."
-    r"буду\s+рад(?:а)?\s+(?:обсудить|пообщаться|услышать|любой\s+обратной|возможност)\w*\b[^.!?]*[.!?]",
-    # "Хотел(а) бы обсудить/узнать больше/присоединиться/рассмотреть..."
-    r"хотел(?:а)?\s+бы\s+(?:обсудить|узнать\s+больше|присоединиться|рассмотреть|поработать|внести)\b[^.!?]*[.!?]",
-    # "Надеюсь на ваш ответ/положительный ответ/сотрудничество/обратную связь..."
-    r"надеюсь\s+на\s+(?:ваш\s+|положительн|сотруднич|вашу\s+обратн|обратн)\w*\b[^.!?]*[.!?]",
-    # "Рассчитываю на ваш ответ/сотрудничество/положительный ответ..."
-    r"рассчитываю\s+на\s+(?:ваш\s+|положительн|сотруднич|обратн)\w*\b[^.!?]*[.!?]",
+    r"готов\s+применить",
+    r"готов\s+обсудить\s+детали",
+    r"буду\s+рад\s+обсудить",
+    r"с\s+удовольствием\s+обсужу",
 ]
-
 _WEAK_ENDING_RE = re.compile(
-    r"(?:^|(?<=[.!?]\s))\s*(?:" + "|".join(_WEAK_ENDING_PATTERNS) + r")",
+    r"^\s*(?:" + "|".join(_WEAK_ENDING_PATTERNS) + r")",
     re.IGNORECASE,
 )
 
-# Meta / reasoning leakage lines.
+_STACK_LEAD_RE = re.compile(
+    r"^\s*(?:мой\s+стек|стек[:\-]|технологии[:\-]|использую\s+стек)",
+    re.IGNORECASE,
+)
+_VERB_LEAD_RE = re.compile(r"^\s*(?:работаю|использую|пишу|применяю)\b", re.IGNORECASE)
+_STACK_LIST_RE = re.compile(r"[A-Za-z][\w+.#-]*(?:\s*,\s*[A-Za-z][\w+.#-]*){2,}")
+_RUN_CONNECTOR_RE = re.compile(r"\s+(?:и|а\s+также)\s+", re.IGNORECASE)
+
 _META_LEAD_RE = re.compile(
-    r"^\s*(?:вот|итак|конечно|разрешите)\b[,:]*",
+    r"^\s*(?:вот\s+мой\s+ответ|вот\s+письмо|ниже\s+письмо|сопроводительное\s+письмо)[:\-]?",
     re.IGNORECASE,
 )
 _META_FULL_LINE_RE = re.compile(
-    r"^\s*(?:вот\s+)?(?:готововое\s+)?(?:письмо|ответ|черновик|текст|план|структура)"
-    r"(?:\s+для\s+вас|\s+варь|\s+ниже)?\s*:?\s*$",
+    r"^\s*(?:как\s+ии|как\s+языковая\s+модель|я\s+—\s+ии).*$",
     re.IGNORECASE,
 )
+_SIGNATURE_RE = re.compile(
+    r"\n\s*(?:с\s+уважением|искренне\s+ваш|best\s+regards)[\s,].*$",
+    re.IGNORECASE | re.DOTALL,
+)
 
-_SIGNATURE_RE = re.compile(r"^\s*с\s+уважением\b", re.IGNORECASE)
-
-_WORD_RE = re.compile(r"[\w\w'\-]+", re.UNICODE)
-
-
-def _word_count(text: str) -> int:
-    return len(_WORD_RE.findall(text))
-
-
-_DECIMAL_RE = re.compile(r"(\d)\.(\d)")
-_DECIMAL_SENTINEL = "\u0001"
+_WORD_RE = re.compile(r"\w+", re.UNICODE)
 
 
 def _split_sentences(paragraph: str) -> List[str]:
     """Split into sentences keeping their trailing punctuation.
 
-    Decimals like '99.5' are masked first so the '.' isn't treated as a
-    sentence boundary, then restored.
+    Decimals like '99.5' and version strings like '3.29.0' are masked first
+    so the '.' isn't treated as a sentence boundary, then restored.
+    The masking runs iteratively until stable to handle X.Y.Z patterns.
     """
-    masked = _DECIMAL_RE.sub(rf"\1{_DECIMAL_SENTINEL}\2", paragraph)
+    masked = paragraph
+    for _ in range(8):  # cap iterations defensively; 8 covers any realistic version depth
+        new_masked = _DECIMAL_RE.sub(rf"\1{_DECIMAL_SENTINEL}\2", masked)
+        if new_masked == masked:
+            break
+        masked = new_masked
     parts = re.findall(r"[^.!?]*[.!?]+|\S[^.!?]*$", masked)
-    return [p.replace(_DECIMAL_SENTINEL, ".").strip() for p in parts if p.strip()]
+    sentences = [p.replace(_DECIMAL_SENTINEL, ".").strip() for p in parts if p.strip()]
+    logger.debug("_split_sentences: %d sentences from %d-char paragraph", len(sentences), len(paragraph))
+    return sentences
+
+
+def _is_stack_dump_sentence(sentence: str) -> bool:
+    if _STACK_LEAD_RE.search(sentence):
+        return True
+    if _VERB_LEAD_RE.search(sentence) and _STACK_LIST_RE.search(sentence):
+        return True
+    if _STACK_LIST_RE.search(sentence) and len(_WORD_RE.findall(sentence)) <= 12:
+        return True
+    return False
+
+
+def strip_meta_and_signature(text: str) -> str:
+    """Remove meta preambles ('Вот моё письмо:') and trailing signatures."""
+    lines = text.splitlines()
+    cleaned: List[str] = []
+    for line in lines:
+        if _META_FULL_LINE_RE.match(line):
+            continue
+        line = _META_LEAD_RE.sub("", line)
+        cleaned.append(line)
+    out = "\n".join(cleaned)
+    out = _SIGNATURE_RE.sub("", out)
+    return out.strip()
 
 
 def strip_stack_dump(text: str) -> str:
-    """Remove sentences that are tech-stack enumerations.
-
-    Three checks per sentence:
-      1. explicit "Стек:" lead  -> drop sentence,
-      2. comma/slash list regex -> drop or excise the list fragment,
-      3. tech-density heuristic  -> drop sentence (catches verb-led dumps
-         with slashes/spaces/"и" that the regex misses).
-    Inline mentions ("использовал gRPC-интеграцию") have low density and are kept.
-    """
+    """Drop sentences that look like a bare stack enumeration."""
+    paragraphs = re.split(r"\n\s*\n", text)
     out_paragraphs: List[str] = []
-    for paragraph in re.split(r"\n\s*\n", text):
-        kept: List[str] = []
-        for sent in _split_sentences(paragraph):
-            # 1. Explicit "Стек:" lead — always a dump, drop the sentence.
-            if _STACK_LEAD_RE.match(sent):
-                continue
-            # 3. Density heuristic — a sentence packed with technologies is a
-            # dump regardless of how it's punctuated. Checked before the regex
-            # because it's the robust path.
-            if _is_stack_dump_sentence(sent):
-                continue
-            # 2. Fallback: explicit comma/slash list of capitalized tokens.
-            m = _STACK_LIST_RE.search(sent)
-            has_list = bool(m and (m.group(0).count(",") + m.group(0).count("/")) >= 4)
-            if _VERB_LEAD_RE.match(sent) and has_list:
-                continue
-            if has_list:
-                if len(m.group(0)) >= 0.6 * len(sent):
-                    continue
-                sent = (sent[: m.start()] + sent[m.end() :]).strip(" ,;/—\-")
-                sent = re.sub(r"\(\s*\)", "", sent)
-                sent = re.sub(r"\s+([,;.])", r"\1", sent)
-                sent = re.sub(r"([,;])\s*([,;])", r"\1", sent).strip(" ,;/—\-")
-                if not sent:
-                    continue
-            kept.append(sent)
+    for paragraph in paragraphs:
+        sents = _split_sentences(paragraph)
+        kept = [s for s in sents if not _is_stack_dump_sentence(s)]
         if kept:
             out_paragraphs.append(" ".join(kept))
+    logger.debug("strip_stack_dump: %d paragraph(s) retained from input", len(out_paragraphs))
     return "\n\n".join(out_paragraphs)
 
 
@@ -243,70 +106,47 @@ def strip_weak_ending(text: str) -> str:
     Only matches the narrow cliché patterns in _WEAK_ENDING_PATTERNS, so
     live finals like 'Готов показать архитектуру…' or 'Готов привести
     метрики по проекту…' are preserved.
+
+    Rollback guard: if removing the weak ending would leave the last
+    paragraph with fewer than 2 sentences AND the letter has fewer than
+    3 paragraphs total, the removal is rolled back. This protects
+    against truncating already-short letters down to a stub.
     """
     paragraphs = re.split(r"\n\s*\n", text)
     if not paragraphs:
         return text
     last = paragraphs[-1]
-    sents = _split_sentences(last)
+    sents_original = _split_sentences(last)
+    sents = list(sents_original)
+    removed = 0
     while sents and _WEAK_ENDING_RE.match(sents[-1]):
         sents.pop()
+        removed += 1
+    if removed > 0 and len(sents) < 2 and len(paragraphs) < 3:
+        logger.debug(
+            "strip_weak_ending: rolled back removal of %d sentence(s) — would leave "
+            "last paragraph with %d sentence(s) in a %d-paragraph letter",
+            removed, len(sents), len(paragraphs),
+        )
+        sents = sents_original
+        removed = 0
+    if removed > 0:
+        logger.debug("strip_weak_ending: removed %d trailing weak sentence(s)", removed)
     paragraphs[-1] = " ".join(sents)
     paragraphs = [p for p in paragraphs if p.strip()]
     return "\n\n".join(paragraphs)
 
 
-def strip_meta_and_signature(text: str) -> str:
-    """Drop leading meta lines and any 'С уважением…' block onward."""
-    lines = text.splitlines()
-    # Cut signature block (from the first matching line to the end).
-    for idx, line in enumerate(lines):
-        if _SIGNATURE_RE.match(line.strip()):
-            lines = lines[:idx]
-            break
-    # Drop leading blank lines and standalone meta lines ("Вот письмо для вас:").
-    while lines:
-        head = lines[0].strip()
-        if not head:
-            lines.pop(0)
-            continue
-        if _META_FULL_LINE_RE.match(head):
-            lines.pop(0)
-            continue
-        # Strip an inline lead ("Вот, ...") but keep the rest of the line.
-        cleaned = _META_LEAD_RE.sub("", head)
-        if cleaned != head and cleaned:
-            lines[0] = cleaned
-        break
-    return "\n".join(lines).strip()
-
-
 def normalize_punctuation(text: str) -> str:
-    """Fix punctuation artefacts left by fragment removal.
-
-    Handles: double dashes ("—  —"), space-before-comma/period, doubled
-    commas, empty parens, and stray leading/trailing separators per line.
-    """
-    # Empty parentheses left after excising a list inside them.
-    text = re.sub(r"\(\s*\)", "", text)
-    # Collapse repeated dashes (possibly space-separated) into one.
-    text = re.sub(r"(?:\s*[—–\-]\s*){2,}", " — ", text)
-    # Space before closing punctuation.
-    text = re.sub(r"\s+([,;.!?])", r"\1", text)
-    # Double commas/semicolons.
-    text = re.sub(r"([,;])\s*[,;]+", r"\1", text)
-    # Collapse multiple spaces.
-    text = re.sub(r"[ \t]{2,}", " ", text)
-    # A dash immediately before end-of-sentence punctuation is orphaned.
-    text = re.sub(r"\s*—\s*([.!?])", r"\1", text)
-    # Final pass: collapse any double spaces introduced by removals above.
-    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"\s+([,.;:!?])", r"\1", text)
+    text = re.sub(r"([,.;:!?])([^\s\d])", r"\1 \2", text)
+    text = re.sub(r"([!?.]){2,}", r"\1", text)
+    text = re.sub(r"\s+—\s+", " — ", text)
     return text
 
 
 def normalize_whitespace(text: str) -> str:
-    """Collapse 3+ newlines to a paragraph break, trim trailing spaces."""
-    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
@@ -317,19 +157,24 @@ def postprocess_letter(text: str) -> str:
     """
     if not text:
         return text
+    initial_len = len(text)
     text = strip_meta_and_signature(text)
     text = strip_stack_dump(text)
     text = strip_weak_ending(text)
     text = normalize_punctuation(text)
     text = normalize_whitespace(text)
+    logger.debug(
+        "postprocess_letter: %d chars -> %d chars (delta %+d)",
+        initial_len, len(text), len(text) - initial_len,
+    )
     return text
 
 
 __all__ = [
     "postprocess_letter",
+    "strip_meta_and_signature",
     "strip_stack_dump",
     "strip_weak_ending",
-    "strip_meta_and_signature",
     "normalize_punctuation",
     "normalize_whitespace",
 ]
