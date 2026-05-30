@@ -12,6 +12,11 @@ from vacancy_agent.letter_adapters.base import LetterAdapter, LetterGenerationRe
 from vacancy_agent.schemas import CandidateProfile, Vacancy
 
 # --- STRICT OUTPUT GUARD START ---
+# NOTE: _STRICT_NEXT_STEP is intentionally KEPT here only to allow the
+# "already-present template" detection logic to keep working defensively
+# if some upstream change reintroduces it. The guard no longer INJECTS
+# this phrase anywhere — the model is expected to produce a live final
+# (see FINALIZER_SYSTEM in cover-letter-genv2v2/src/writer.py).
 _STRICT_NEXT_STEP = "Готов обсудить задачи и подробнее рассказать о релевантном опыте на собеседовании."
 
 _STRICT_BAD_ENDING_MARKERS = (
@@ -182,6 +187,7 @@ def _letter_has_concrete_facts_for_validator(letter: str) -> bool:
 
     return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns)
 
+
 def _filter_violations_after_guard(violations: list[Any], letter: str) -> list[Any]:
     normalized_letter = _normalize_letter_versions(letter or "")
     lowered_letter = normalized_letter.lower()
@@ -215,6 +221,7 @@ def _filter_violations_after_guard(violations: list[Any], letter: str) -> list[A
 
     return cleaned
 
+
 def _enforce_strict_letter_rules(letter: str, *, allowed_tech: list[str]) -> str:
     text = _normalize_letter_versions((letter or "").strip())
 
@@ -234,7 +241,7 @@ def _enforce_strict_letter_rules(letter: str, *, allowed_tech: list[str]) -> str
     text = "\n".join(kept_lines).strip()
 
     if not text:
-        return _STRICT_NEXT_STEP
+        return ""
 
     sentences = _split_sentences(text)
     safe_sentences: list[str] = []
@@ -249,22 +256,7 @@ def _enforce_strict_letter_rules(letter: str, *, allowed_tech: list[str]) -> str
         safe_sentences.append(sentence)
 
     if not safe_sentences:
-        safe_sentences = [_STRICT_NEXT_STEP]
-
-    # Если последняя фраза — запрещённая слабая концовка, заменяем её на next step.
-    last = safe_sentences[-1].strip().lower()
-
-    if any(marker in last for marker in _STRICT_BAD_ENDING_MARKERS):
-        safe_sentences[-1] = _STRICT_NEXT_STEP
-    elif _STRICT_NEXT_STEP not in " ".join(safe_sentences):
-        safe_sentences.append(_STRICT_NEXT_STEP)
-
-    # Собираем максимум в 2 абзаца: факты + next step.
-    if len(safe_sentences) == 1:
-        return safe_sentences[0].strip()
-
-    if safe_sentences[-1] == _STRICT_NEXT_STEP:
-        return " ".join(safe_sentences[:-1]).strip() + "\n\n" + _STRICT_NEXT_STEP
+        return ""
 
     return " ".join(safe_sentences).strip()
 # --- STRICT OUTPUT GUARD END ---
