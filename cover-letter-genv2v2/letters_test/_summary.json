@@ -1,0 +1,141 @@
+[
+  {
+    "vacancy_id": "ad5b918802534143",
+    "company": "Playneta",
+    "title": "Senior Go Developer / Разработчик",
+    "letter": "3+ года коммерческой Flutter-разработки. Работал над продуктом с миллионами пользователей и real-time взаимодействиями — дорабатывал сообщества, каналы, посты и комментарии. Реализовал систему доступов для 6 ролей с 256 комбинациями прав и назначением модераторов. Переработал auth и profile модули с 4 способами авторизации, восстановлением пароля и OTP-сценариями, покрыл 80% кода unit-тестами. Добавил обработку отсутствия интернета и retry-сценарии в 5 критических flow, подняв стабильность с 92% до 99.5%. Свежий код, современная архитектура и серьёзные нагрузки — это то, чем я живу в каждом проекте.",
+    "analyzer_json": {
+      "vacancy_type": "social",
+      "top_requirements": [
+        "Senior Golang Developer с опытом от 3 лет коммерческой разработки на Go",
+        "Опыт работы с PostgreSQL, Apache Kafka и Redis",
+        "Опыт разработки высоконагруженных B2C-продуктов с миллионами пользователей"
+      ],
+      "selected_project": "DIOM",
+      "confidence": 0.35,
+      "confidence_reason": "Стек кандидата — Flutter/Dart, а вакансия требует Go-разработчика; единственное пересечение — опыт работы с высоконагруженным B2C-продуктом и real-time взаимодействиями в социальной сети.",
+      "selected_numbers": [
+        "80",
+        "6",
+        "256",
+        "99"
+      ],
+      "selected_achievements": [
+        "Дорабатывал сообщества, каналы, посты, комментарии. Реализовал систему доступов для 6 ролей (256 комбинаций прав) с назначением модераторов",
+        "Переработал auth и profile модули с 4 способами авторизации (Email, Phone/SMS, VK ID, Yandex ID), восстановлением пароля и OTP‑сценариями; покрыл 80% кода unit‑тестами",
+        "Добавил обработку отсутствия интернета и retry‑сценарии в 5 критических flow; стабильность выросла с 92% до 99.5%"
+      ],
+      "hook_phrase": "Kiss Kiss 2.0 — это про свежий код, отсутствие легаси, современную архитектуру и серьёзные нагрузки: в продукте будут миллионы пользователей, real-time взаимодействия",
+      "honest_gaps": [
+        "Опыт разработки на Go отсутствует — основной стек кандидата Flutter/Dart",
+        "Нет коммерческого опыта работы с PostgreSQL, Kafka, Redis и ScyllaDB"
+      ]
+    },
+    "selected_project": "DIOM",
+    "confidence": 0.35,
+    "confidence_reason": "Стек кандидата — Flutter/Dart, а вакансия требует Go-разработчика; единственное пересечение — опыт работы с высоконагруженным B2C-продуктом и real-time взаимодействиями в социальной сети.",
+    "used_numbers": [
+      "3",
+      "6",
+      "256",
+      "80"
+    ],
+    "used_tech": [
+      "Flutter",
+      "OTP"
+    ],
+    "universal_mode": true,
+    "semantic_validator_used": false,
+    "word_count": 81,
+    "passed": false,
+    "attempts": 3,
+    "violations": [
+      {
+        "rule": "invented_number",
+        "evidence": "4",
+        "fix_hint": "Число «4» нет в selected_numbers — удали или замени.",
+        "severity": "hard"
+      },
+      {
+        "rule": "invented_number",
+        "evidence": "5",
+        "fix_hint": "Число «5» нет в selected_numbers — удали или замени.",
+        "severity": "hard"
+      },
+      {
+        "rule": "invented_number",
+        "evidence": "92",
+        "fix_hint": "Число «92» нет в selected_numbers — удали или замени.",
+        "severity": "hard"
+      },
+      {
+        "rule": "invented_number",
+        "evidence": "99.5",
+        "fix_hint": "Число «99.5» нет в selected_numbers — удали или замени.",
+        "severity": "hard"
+      }
+    ],
+    "error": "validation_failed_after_retries"
+  },
+  {
+    "vacancy_id": "16a12c5faeade13d",
+    "company": "Плати по миру",
+    "title": "Flutter-разработчик",
+    "letter": "3+ года коммерческой Flutter-разработки. Сейчас работаю над DIOM — приложением, которое позволяет моментально выпускать виртуальные карты для покупок за границей и оплату зарубежных сервисов. Переработал auth и profile модули с 4 способами авторизации, восстановлением пароля и OTP-сценариями; покрыл 80% кода unit-тестами. Добавил обработку отсутствия интернета и retry-сценарии в 5 критических flow; стабильность выросла с 92% до 99.5%.\n\nВ DIOM это реализовалось в надёжной работе карточного функционала и бесшовной авторизации через несколько провайдеров.",
+    "analyzer_json": {
+      "vacancy_type": "fintech",
+      "top_requirements": [
+        "Flutter/Dart с BLoC/Cubit и Clean Architecture",
+        "Интеграция с REST API, обработка ошибок и edge-кейсов для платёжных операций",
+        "Понимание требований к безопасности мобильного клиента (secure storage, SSL pinning)"
+      ],
+      "selected_project": "DIOM",
+      "confidence": 0.65,
+      "confidence_reason": "DIOM — потребительское приложение, а не финтех, но в нём реализованы auth-сценарии, JWT, Secure Storage, обработка сетевых ошибок и retry-сценарии, что частично пересекается с требованиями вакансии.",
+      "selected_numbers": [
+        "4",
+        "80",
+        "5",
+        "92",
+        "99"
+      ],
+      "selected_achievements": [
+        "Переработал auth и profile модули с 4 способами авторизации (Email, Phone/SMS, VK ID, Yandex ID), восстановлением пароля и OTP‑сценариями; покрыл 80% кода unit‑тестами",
+        "Добавил обработку отсутствия интернета и retry‑сценарии в 5 критических flow; стабильность выросла с 92% до 99.5%"
+      ],
+      "hook_phrase": "моментально выпускать виртуальные карты для покупок за границей и оплаты зарубежных сервисов",
+      "honest_gaps": [
+        "Нет прямого опыта в финтехе или платёжных продуктах"
+      ]
+    },
+    "selected_project": "DIOM",
+    "confidence": 0.65,
+    "confidence_reason": "DIOM — потребительское приложение, а не финтех, но в нём реализованы auth-сценарии, JWT, Secure Storage, обработка сетевых ошибок и retry-сценарии, что частично пересекается с требованиями вакансии.",
+    "used_numbers": [
+      "3",
+      "4",
+      "80",
+      "5",
+      "92"
+    ],
+    "used_tech": [
+      "Flutter",
+      "DIOM",
+      "OTP"
+    ],
+    "universal_mode": false,
+    "semantic_validator_used": false,
+    "word_count": 72,
+    "passed": false,
+    "attempts": 3,
+    "violations": [
+      {
+        "rule": "invented_number",
+        "evidence": "99.5",
+        "fix_hint": "Число «99.5» нет в selected_numbers — удали или замени.",
+        "severity": "hard"
+      }
+    ],
+    "error": "validation_failed_after_retries"
+  }
+]

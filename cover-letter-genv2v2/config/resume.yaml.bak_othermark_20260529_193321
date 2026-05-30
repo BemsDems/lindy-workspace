@@ -1,0 +1,280 @@
+personal:
+  name: Дуков Тамерлан
+  birth_date: '2003-01-04'
+  age: 23
+  gender: male
+  location: Нальчик
+  citizenship: Россия
+  relocation: false
+  business_trips: редкие
+contacts:
+  phone: +7 (964) 034-30-55
+  email: avapa2015@yandex.ru
+  telegram: '@jaqFresco'
+  telegram_url: https://t.me/jaqFresco
+desired:
+  title: Flutter developer
+  specializations:
+  - Программист, разработчик
+  employment_type: полная занятость
+  work_format:
+  - удалённо
+  - на месте работодателя
+  - гибрид
+  commute_time: не имеет значения
+summary: 'Flutter-разработчик с опытом более 3-х лет коммерческой разработки.
+
+  Работал как с legacy-кодом (полный рефакторинг модулей), так и с проектами
+
+  с нуля (архитектура, инфраструктура, интеграции). В отдельных задачах
+
+  выступал ответственным за технические решения.
+
+  '
+skills:
+  primary:
+  - Dart
+  - Flutter
+  - BLoC
+  - Cubit
+  - Clean Architecture
+  - REST API
+  - gRPC
+  secondary:
+  - Firebase
+  - FCM
+  - JWT
+  - Secure Storage
+  - WebView
+  - Freezed
+  - Auto Route
+  - Deep Links
+  - SQLite
+  - Drift
+  - Sentry
+  soft:
+  - Git
+  - GitHub
+  - GitLab
+  - Jira
+  - Figma
+  - Agile
+  - CI/CD
+  architecture:
+  - Clean Architecture
+  - MVVM
+  - MVC
+  - Feature-based Architecture
+  - Layered Architecture
+  principles:
+  - SOLID
+  - DRY
+  - ООП
+experience:
+  total_years: 3
+  total_months: 2
+  positions:
+  - title: Flutter-разработчик
+    company: OtherCode
+    company_url: https://othercode.ru/
+    industry: Информационные технологии, системная интеграция, интернет
+    period_start: 2025-02
+    period_end: 2025-10
+    duration_months: 9
+    current: false
+    projects:
+    - name: OtherMark
+      description: Внутренняя B2B/ERP-система для работы с маркировкой товаров в системе «Честный ЗНАК»
+      role: Flutter-разработчик в команде (Flutter + backend + тимлид + специалист)
+      tech_stack:
+      - Flutter
+      - Dart
+      - BLoC
+      - Cubit
+      - Clean Architecture
+      - GetIt
+      - Injectable
+      - gRPC
+      - Protobuf
+      achievements:
+      - Спроектировал архитектуру приложения на Clean Architecture с DI, настроил gRPC-клиент и автогенерацию Dart-кода
+      - Реализовал 5 ключевых B2B-модулей, на 15% быстрее типичных решений
+      - Разработал внутреннюю дизайн-систему, что ускорило разработку новых экранов и улучшило консистентность интерфейса
+      - Внедрил валидацию российских бизнес‑форматов (ИНН, GLN, КПП, OMS UUID), что сократило ошибки ввода на 40%
+      - 'Оптимизировал запросы к gRPC‑серверу: уменьшил время отклика на 30% и потребление памяти на 25%'
+    - name: DIOM
+      description: Социальная контент-платформа с авторскими каналами, сообществами, лентой постов, комментариями, реакциями,
+        профилями, подписками и модерацией UGC-контента.
+      role: Разработка продуктовых фич в команде 10+ разработчиков с feature-based архитектурой, task tracker и code style
+        guide.
+      domain: Социальная сеть и контент-платформа. Разработка пользовательских сценариев, авторизации, сообществ, профиля,
+        гостевого режима и модерации контента.
+      tech_stack:
+      - Flutter
+      - Dart
+      - BLoC
+      - Cubit
+      - auto_route
+      - Dio
+      - Freezed
+      - Injectable
+      - GetIt
+      - WebView
+      - OAuth
+      - Firebase Messaging
+      - slang
+      - image_picker
+      achievements:
+      - Разработал модуль сообществ с созданием, редактированием, настройками, ролями admin/moderator, подписчиками, чёрным
+        списком и публикацией постов.
+      - Реализовал авторизацию по телефону с OTP, email и OAuth через Яндекс, VK и VK ID с WebView-flow и обработкой ошибок.
+      - Создал многошаговый flow заполнения профиля после регистрации с загрузкой аватара, выбором интересов, валидацией и
+        сохранением промежуточных данных.
+      - Внедрил гостевой режим, позволяющий неавторизованным пользователям просматривать ленту, посты, комментарии и возвращаться
+        к сценарию после логина.
+      - Реализовал ProfanityFilter для модерации UGC-контента с фильтрацией русской и английской нецензурной лексики.
+      - Перенёс и адаптировал логику подписчиков и чёрного списка из каналов в сообщества с обновлением Cubit, моделей и навигации.
+      - Добавил retry-сценарии и экраны ошибок для авторизации, заполнения профиля и создания сообществ.
+      - За период работы внёс 137 коммитов, создал 83 новых Dart-файла и исправил около 40 UX- и flow-багов.
+  - title: Flutter разработчик
+    company: KMGT
+    industry: Информационные технологии
+    period_start: 2023-07
+    period_end: 2025-01
+    duration_months: 19
+    current: false
+    projects:
+    - name: ЭталонИнвест
+      description: Мобильное приложение для застройщика с личными кабинетами покупателя и риелтора, push-уведомлениями, WebView-интеграцией
+        и публикацией в App Store и Google Play.
+      url: https://apps.apple.com/ru/app/etalon-invest/id6754565558
+      role: Самостоятельная разработка и поддержка приложения от старта проекта до релиза и последующего WebView-пивота.
+      domain: Недвижимость и строительство. Мобильное приложение для клиентов и риелторов застройщика, прошедшее путь от нативного
+        Flutter-приложения до WebView-wrapper.
+      tech_stack:
+      - Flutter
+      - Dart
+      - BLoC
+      - Cubit
+      - WebView
+      - webview_flutter
+      - Firebase Messaging
+      - url_launcher
+      - Freezed
+      - Injectable
+      - GetIt
+      - Dio
+      - JWT
+      - Secure Storage
+      - flutter_native_splash
+      achievements:
+      - Самостоятельно разработал Flutter-приложение для застройщика с авторизацией, кабинетами покупателя и риелтора, уведомлениями,
+        JWT-управлением и адаптивным UI.
+      - Интегрировал Firebase Cloud Messaging с обработкой permissions, APNs для iOS, подпиской на topic и передачей push-токена
+        в WebView.
+      - Провёл архитектурный пивот с нативного Flutter-приложения на WebView-wrapper, удалив 11 381 строку нативного кода
+        и 82 Dart-файла.
+      - Переписал WebViewService с обработкой deep links, сетевых ошибок, native links, pull-to-refresh и lifecycle-сценариев.
+      - Реализовал FCM → WebView bridge через postMessage для передачи Firebase-токена в веб-приложение.
+      - Написал JS-инъекции для фикса автоскролла на Android и предотвращения зума input-полей на iOS.
+      - Провёл миграцию Flutter до 3.29.0 с обновлением зависимостей, Gradle, Podfile и платформенных конфигураций.
+      - Поддерживал публикацию приложения в App Store и Google Play, включая signing, bundle/application ID, permissions,
+        splash screen и версии.
+    - name: Food One
+      description: Мобильное приложение доставки еды с каталогом ресторанов, меню, корзиной, оформлением заказа, бонусами,
+        push-уведомлениями, картами, авторизацией по SMS и публикацией в App Store и Google Play.
+      url: https://play.google.com/store/apps/details?id=food.one.delivery
+      role: Поддержка и развитие production‑приложения
+      domain: Мобильное приложение доставки еды с каталогом ресторанов, меню, корзиной, оформлением заказа, бонусами, push-уведомлениями,
+        картами, авторизацией по SMS и публикацией в App Store и Google Play.
+      tech_stack:
+      - Flutter
+      - Dart
+      - BLoC
+      - Cubit
+      - Dio
+      - Firebase Messaging
+      - Yandex MapKit
+      - FlutterSecureStorage
+      - flutter_local_notifications
+      - flutter_branch_sdk
+      - FVM
+      achievements:
+      - Переработал модуль авторизации с SMS-верификацией, AuthenticationCubit, AuthenticationRepository и обработкой основных
+        ошибок входа.
+      - Реализовал восстановление пароля с отдельным Repository, Cubit и двумя экранами верификации.
+      - Расширил кэшбэк-систему через модели, API-слой и UI, затронув 33 файла приложения.
+      - Провёл миграцию Flutter с 3.0.2 до 3.29.0, обновив зависимости, Gradle, iOS-конфигурацию и FVM.
+      - Реализовал автодетект категории при скролле меню ресторана через InViewNotifierList и синхронизацию scroll-контроллеров.
+      - Выделил 4 переиспользуемых виджета авторизации и сократил дублирование между экранами входа и регистрации.
+      - Исправил серию багов checkout flow, включая валидацию адреса, форму комментария, overflow текста и оплату бонусами.
+      - Поддерживал публикацию приложения в App Store и Google Play, обновляя версии, permissions, signing и платформенные
+        конфигурации.
+  - title: Flutter разработчик
+    company: Integra
+    industry: Стартап
+    period_start: 2022-09
+    period_end: 2023-06
+    duration_months: 10
+    current: false
+    projects:
+    - name: Integra
+      description: Мобильное приложение для персонального планирования задач, заметок, контактов и календаря с голосовым вводом,
+        push-уведомлениями и синхронизацией с сервером.
+      url: https://apps.apple.com/ru/app/integra/id1563253431
+      role: Первый коммерческий проект. Рефакторинг MVP‑кодовой базы
+      domain: Мобильное приложение для персонального планирования задач, заметок, контактов и календаря с голосовым вводом,
+        push-уведомлениями и синхронизацией с сервером.
+      tech_stack:
+      - Flutter
+      - Dart
+      - BLoC
+      - Cubit
+      - Provider
+      - Freezed
+      - Drift
+      - sqflite
+      - gRPC
+      - http
+      - Firebase Messaging
+      - Sentry
+      - Local Notifications
+      - Speech-to-Text
+      achievements:
+      - Разработал модуль авторизации на AuthCubit, Repository и ResponseState с обработкой сетевых ошибок, валидацией номера
+        телефона, сохранением сессии и логированием ошибок через Sentry.
+      - Объединил 3 разрозненных BLoC-модуля задач в один TaskBloc, сократив объём кода на 2 682 строки.
+      - Декомпозировал экраны задач, заметок и главной страницы на 15+ переиспользуемых компонентов с Scope-based DI.
+      - Переработал NoteModule и сократил кодовую базу на 1 448 строк при сохранении функциональности.
+      - Заменил CustomAppBar на 2 специализированных виджета и убрал 1 388 строк избыточного кода.
+      - Исправил баги голосового ввода задач, включая дублирование, удаление через микрофон и обработку разрешений.
+      - Доработал адаптивную вёрстку через SizeConfig и textScaleFactor.
+      - За период работы внёс 77 коммитов, затронул 6 модулей приложения, создал 34 новых файла и удалил 16 устаревших.
+education:
+- degree: Бакалавр
+  institution: Кабардино‑Балкарский государственный университет им. Х.М. Бербекова
+  location: Нальчик
+  faculty: Институт искусственного интеллекта и ЦТ
+  specialization: Информатика и вычислительная техника
+  year_start: 2022
+  year_end: 2026
+  status: в процессе
+- degree: Среднее специальное
+  institution: Колледж информационных технологий и экономики
+  specialization: Компьютерные сети
+  year_end: 2022
+languages:
+- name: Русский
+  level: Родной
+  level_code: C2
+- name: Английский
+  level: A2 — Элементарный
+  level_code: A2
+additional:
+  github: null
+  portfolio: null
+  certifications: []
+interests:
+- Архитектура мобильных приложений
+- Clean Code
+- Flutter best practices

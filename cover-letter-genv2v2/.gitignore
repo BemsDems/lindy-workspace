@@ -1,0 +1,18 @@
+# Local secrets / personal data — never commit
+.env
+config/settings.yaml
+config/resume.yaml
+data/vacancies.json
+data/selected_vacancy_ids.txt
+letters/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/

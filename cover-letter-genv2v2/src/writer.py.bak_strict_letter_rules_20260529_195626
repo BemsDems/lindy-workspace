@@ -1,0 +1,470 @@
+"""Pass 2: Analyzer JSON + CanonicalFacts -> letter text."""
+
+from __future__ import annotations
+import re
+
+import json
+
+from typing import Any, Dict, List, Optional
+
+from .facts import CanonicalFacts
+from .llm_client import LLMClient
+from .prompts.opener_pool import select_openers
+from .prompts.writer import build_writer_user, select_writer_system
+
+
+def build_canonical_facts_brief(
+    facts: CanonicalFacts, selected_project: str
+) -> Dict[str, Any]:
+    """Compact dict of facts handed to the Writer — only what's needed."""
+    proj = facts.project(selected_project)
+    return {
+        "candidate_name": facts.candidate_name,
+        "selected_project_name": proj.name if proj else selected_project,
+        "selected_project_company": proj.company if proj else "",
+        "selected_project_industry": proj.industry if proj else "",
+        "selected_project_description": proj.description if proj else "",
+        "selected_project_tech": list(proj.tech_stack) if proj else [],
+        "allowed_tech": sorted(facts.allowed_tech),
+    }
+
+
+def _normalize_metric(value: object) -> str:
+    text = str(value).lower().replace(",", ".")
+    text = re.sub(r"\s+", "", text)
+    return text
+
+
+def _allowed_metric_tokens(analyzer_json: Dict[str, Any]) -> set[str]:
+    selected_numbers = analyzer_json.get("selected_numbers") or []
+    tokens: set[str] = set()
+
+    for item in selected_numbers:
+        item_text = str(item)
+
+        for number in re.findall(r"\d+(?:[.,]\d+)?\s*(?:%|\+|млн|тыс|тысяч)?", item_text.lower()):
+            tokens.add(_normalize_metric(number))
+
+    tokens.add("3")
+    tokens.add("3+")
+
+    return tokens
+
+
+def _remove_unapproved_metric_sentences(text: str, analyzer_json: Dict[str, Any]) -> str:
+    allowed = _allowed_metric_tokens(analyzer_json)
+    paragraphs = text.split("\n\n")
+    cleaned_paragraphs: list[str] = []
+
+    for paragraph in paragraphs:
+        sentences = re.split(r"(?<=[.!?])\s+", paragraph.strip())
+        cleaned_sentences: list[str] = []
+
+        for sentence in sentences:
+            numbers = re.findall(r"\d+(?:[.,]\d+)?\s*(?:%|\+|млн|тыс|тысяч)?", sentence.lower())
+
+            if not numbers:
+                cleaned_sentences.append(sentence)
+                continue
+
+            if "3+ года" in sentence or "3 года" in sentence:
+                cleaned_sentences.append(sentence)
+                continue
+
+            normalized_numbers = {_normalize_metric(number) for number in numbers}
+
+            if normalized_numbers.issubset(allowed):
+                cleaned_sentences.append(sentence)
+
+        cleaned_paragraph = " ".join(item for item in cleaned_sentences if item).strip()
+
+        if cleaned_paragraph:
+            cleaned_paragraphs.append(cleaned_paragraph)
+
+    return "\n\n".join(cleaned_paragraphs).strip()
+
+
+async def write_letter(
+    llm: LLMClient,
+    analyzer_json: Dict[str, Any],
+    facts: CanonicalFacts,
+    *,
+    used_starts: Optional[List[str]] = None,
+    feedback: Optional[str] = None,
+    universal_mode: bool = False,
+    temperature: float = 0.4,
+    max_tokens: int = 400,
+    two_pass_editing: bool = False,
+) -> str:
+    system_prompt = select_writer_system(universal_mode=universal_mode)
+    selected_project = str(analyzer_json.get("selected_project") or "")
+    brief = build_canonical_facts_brief(facts, selected_project)
+    opener_pool = select_openers(facts.experience_years, used_starts or [], n=2)
+
+    # Generate the final letter FROM FACTS ONLY.
+    final_text = await _final_letter_from_facts(
+        llm,
+        analyzer_json=analyzer_json,
+        canonical_facts_brief=brief,
+        opener_pool=opener_pool,
+        universal_mode=universal_mode,
+        feedback=feedback,
+        max_tokens=max_tokens,
+    )
+    return _strip_signature_lines(final_text)
+
+
+CLEANER_SYSTEM = """\
+Ты редактор сопроводительных писем. Твоя задача — превратить черновик в ГОТОВОЕ письмо.
+
+ВХОД
+Черновик может содержать:
+- рассуждения ("нужно", "проверяю", "сначала", "план", "структура"),
+- списки и пункты,
+- служебные слова и внутренние термины пайплайна,
+- обрывы текста.
+
+ВЫХОД (КРИТИЧНО)
+- Верни ТОЛЬКО финальный текст сопроводительного письма.
+- Никаких пояснений, никаких вступлений про пользователя/задачу, никаких "собираю текст".
+- Если в черновике нет готового письма (или оно обрывается) — НАПИШИ письмо заново, используя только факты, явно присутствующие в черновике.
+
+ЗАПРЕЩЕНО (удаляй и не добавляй)
+- любые мета-слова и рассуждения: "пользователь", "черновик", "формат", "ограничения", "проверяю", "анализирую", "план", "структура".
+- любые внутренние термины: selected_numbers, selected_achievements, allowed_tech, openers, confidence, analyzer, canonical facts.
+- любые списки (маркированные/нумерованные), заголовки, markdown.
+- подпись и любые строки начиная с "С уважением".
+
+СТИЛЬ
+- Русский язык, тех. термины латиницей.
+- Письмо должно читаться естественно.
+"""
+
+
+def _cleaner_user(draft: str, *, universal_mode: bool) -> str:
+    mode = "1-2 плотных абзаца" if universal_mode else "2-3 абзаца, разделённых пустой строкой"
+    return (
+        f"Режим: {mode}.\n"
+        "Перепиши черновик в чистое сопроводительное письмо по режиму выше.\n\n"
+        "ЧЕРНОВИК:\n"
+        f"{draft.strip()}\n"
+    )
+
+
+FINALIZER_SYSTEM = """\
+Ты — HR-эксперт и карьерный консультант с опытом работы в международных компаниях. Твоя задача — адаптировать сопроводительные письма для вакансий в IT-компаниях, чтобы они звучали профессионально, убедительно и соответствовали корпоративной культуре компании.
+
+Правила:
+- Пиши коротко, но ёмко. Не более 3-4 предложений в абзаце.
+- Абзац 1: кратко представь кандидата + 1-2 ключевых достижения + 2-3 конкретных факта из резюме.
+  Пример: "Специализируюсь на Flutter и Dart, разработал приложение с 50K+ активных пользователей, что увеличило retention на 30% за 6 месяцев."
+- Абзац 2: объясни, почему кандидат идеально подходит на эту роль (соотнеси опыт с требованиями вакансии).
+  Пример: "Опыт работы с Firebase и чистой архитектурой (3+ года) полностью соответствует требованиям вакансии, а опыт оптимизации производительности приложений подтверждает мою готовность к задачам в вашей команде."
+- Абзац 3: вырази энтузиазм и предложи встречу/интервью.
+  Пример: "Буду рад обсудить, как мой опыт в разработке кроссплатформенных приложений может быть полезен вашей команде. Готов поделиться деталями на интервью."
+
+Дополнительные правила:
+- Избегай клише: "ответственный", "командный игрок", "результат-ориентированный".
+- Адаптируй стиль под компанию:
+  - Стартап: энергично, неформально, с акцентом на скорость и инновации.
+  - Корпорация: профессионально, структурированно, с акцентом на стабильность и процессы.
+  - Food One / FoodTech: акцент на масштабируемость и работу с большими данными (примеры: оптимизация логистики, анализ данных о заказах).
+  - Фулл стек / фронтенд / бэкенд: детализация технических навыков (фреймворки, инструменты, архитектура).
+- Не упоминай зарплату, вилку или бонусы.
+- Не используй маркеры списков или нумерацию.
+- В первом абзаце НЕ упоминай годы опыта (например, "5 лет в Flutter"). Вместо этого используй конкретные достижения.
+- В первых двух предложениях НЕ используй шаблонные фразы (например, "Я узнал о вакансии на сайте компании"). Сразу переходи к сути.
+- Не начинай каждое письмо одинаково. Используй адресный вход под вакансию.
+- Заканчивай конкретной пользой и мягким предложением обсудить задачи.
+- Допустимые финалы: "Буду рад обсудить, как мой опыт может быть полезен вашей команде." или "Готов подробнее рассказать о релевантном опыте на созвоне."
+- Используй минимум двоеточий и тире.
+- Не строй письмо по схеме "опыт: перечисление".
+- Не пиши много конструкций через "—".
+- Лучше писать простыми предложениями.
+- В письме допускается максимум одно двоеточие.
+- В письме допускается максимум одно тире.
+- Во втором абзаце не перечисляй технологии списком.
+- Во втором абзаце связывай опыт с задачами вакансии простыми словами.
+- Не используй больше двух технических терминов во втором абзаце.
+- Не используй в письме названия библиотек нижнего уровня: Dio, Auto Route, go_router, Retrofit, Hive, GetIt, Injectable, Provider, Riverpod, MobX.
+- Вместо них пиши обобщённо: "сетевой слой", "навигация", "локальное хранение", "управление состоянием", "HTTP-клиент".
+- Если библиотека есть только в вакансии, а не в selected_achievements, не присваивай её кандидату.
+- Если первый абзац уже содержит конкретные технологии, второй абзац должен быть более продуктовым и человеческим, показывать пользу для команды.
+- Не используй фразу "близки по духу".
+- Не пиши слишком разговорные формулировки.
+- Не заканчивай письмо на "готов обсудить" или "готов поделиться опытом".
+- Финал должен показывать пользу для команды, а не готовность к диалогу.
+- Не злоупотребляй фразой "этот опыт близок к задачам вакансии".
+- Лучше писать конкретнее: "смогу быть полезен в задачах с авторизацией, пользовательскими сценариями и релизами" или "этот опыт поможет быстрее включиться в развитие продукта".
+- Если вакансия Full Stack или с фокусом на API/интеграции, во втором абзаце делай акцент на архитектуре, сетевом слое, интеграциях и бизнес-логике.
+- Не уходи в медиа, подписки и социальную сеть, если это не связано с вакансией.
+- Не пиши "большая аудитория", "масштабное приложение", "нагруженное приложение", если этого нет в selected_achievements или selected_numbers.
+- Во втором абзаце не заканчивай фразой "в мобильном приложении", если это уже понятно из контекста.
+
+КОНТЕКСТ ПРОЕКТА
+- Описание выбранного проекта является главным источником домена.
+- Нельзя менять предметную область проекта.
+- Если project_description говорит "сервис доставки еды", запрещено писать "платёжная система", "финтех", "банковское приложение", "платёжный сервис".
+- Нельзя писать про миллионы пользователей, крупнейшую систему, Узбекистан, банки или платежи, если этого нет в PROJECT_FACTS или ACHIEVEMENTS.
+- Название компании из вакансии — это компания, куда кандидат откликается, а не место прошлого опыта.
+- Не называй компанию прошлого проекта в письме, если это может спутаться с компанией вакансии.
+- Не используй названия прошлых компаний кандидата в письме: KMGT, Food One и другие company из PROJECT_FACTS.
+- Название прошлой компании можно использовать только если оно явно нужно и не путается с компанией вакансии.
+- Лучше описывать прошлый опыт по домену: "мобильное приложение для заказа еды", "сервис доставки еды", "корзина", "оформление заказа".
+- Не пиши "приложение для KMGT", "задачи KMGT", "команда Food One", если это не компания из вакансии.
+- Если не уверен, вообще не называй компанию — пиши "в последнем проекте".
+
+ФАКТЫ
+- Используй только achievements, selected_numbers и allowed_tech.
+- Числа используй только из selected_numbers.
+- Не выдумывай нагрузку, пользователей, домен, бизнес-результаты.
+- Не присваивай кандидату технологии и задачи только потому, что они есть в вакансии.
+- REST API, WebSocket, Firebase, DRM, ExoPlayer, Media3, HLS, DASH можно писать только если они есть в selected_achievements или allowed_tech.
+- Если факт не подтверждён, пиши обобщённо: "интеграция внешних сервисов", "сетевой слой", "контентные сценарии", "сценарии работы без интернета".
+
+HR-СТИЛЬ ДЛЯ РФ/CIS И HH
+- Письмо должно звучать как уверенный короткий отклик middle/middle+ разработчика, а не как безопасный шаблон.
+- Сохраняй 2 абзаца и 80–110 слов.
+- В первых двух предложениях обязательно укажи 3+ года опыта.
+- Не начинай письмо одинаково фразой "Увидел вашу вакансию и подумал, что мой опыт может быть полезен".
+- Если начинаешь с "Увидел", сразу добавляй конкретику вакансии: мобильный продукт, интеграции, офлайн-сценарии, архитектура, контентные сценарии.
+- Лучше начинать через релевантный production-опыт: "У меня 3+ года коммерческой Flutter-разработки..." или "Последние 3+ года работаю с Flutter-продуктами...".
+- В первом абзаце должен быть production-контекст: релиз, критические пользовательские сценарии, обработка потери сети, стабильность, валидация, интеграции, архитектура.
+- Не добавляй цифры ради убедительности. Числа используй только из selected_numbers.
+- Если точных цифр нет, усиливай письмо без метрик: "довёл изменения до релиза", "закрыл критический пользовательский сценарий", "снизил риск ошибок через валидацию", "улучшил стабильность сценариев".
+- Не используй числа, масштаб и claims из вакансии как аргумент в пользу кандидата: "1,1 млн пользователей", "лидер рынка", "крупнейший сервис", "серьёзный масштаб".
+- Не присваивай кандидату технологии только потому, что они есть в вакансии.
+- REST API, WebSocket и Firebase можно писать только если они есть в selected_achievements или allowed_tech.
+- DRM, ExoPlayer, Media3, HLS и DASH не пиши в финальном письме, если этого нет в selected_achievements.
+- Вместо DRM, ExoPlayer, Media3, HLS и DASH используй безопасные формулировки: "медиаконтент", "контентные сценарии", "офлайн-сценарии", "стабильность приложения".
+- Не используй названия библиотек нижнего уровня: Dio, Auto Route, go_router, Retrofit, Hive, GetIt, Injectable, Provider, Riverpod, MobX.
+- Вместо них пиши обобщённо: "сетевой слой", "навигация", "локальное хранение", "управление состоянием", "HTTP-клиент".
+- Не используй слово бонусная система. Пиши "бонусная система".
+- Не заканчивай письма фразами "Смогу быстро включиться..." или "Этот опыт поможет быстро включиться...".
+- Финал должен быть увереннее и конкретнее: "Готов подробнее рассказать о реализации этих сценариев на интервью.", "Буду рад обсудить, как мой опыт с релизами и интеграциями может быть полезен вашей команде.", "Могу подробнее рассказать, как решал похожие production-задачи в Flutter-проекте."
+- Не пиши мотивационные клише: "мечтаю работать", "очень заинтересовала ваша компания", "хочу развиваться вместе с вами".
+
+ПРИМЕР ХОРОШЕГО СТИЛЯ
+Не копируй факты из примера. Используй пример только как стиль, длину и структуру.
+
+Увидел, что в вакансии важны развитие мобильного продукта, интеграции и аккуратная работа с пользовательскими сценариями. У меня 3+ года коммерческой Flutter-разработки. В последнем проекте работал над приложением сервиса доставки еды: переработал авторизацию с СМС-верификацией и восстановлением пароля, доработал корзину, оформление заказа, доставку и бонусную систему, а также довёл изменения до релиза.
+
+Смогу быть полезен в задачах, где важно быстро включиться в продукт, аккуратно развивать пользовательские сценарии и не ломать стабильность приложения. Буду рад обсудить, как мой опыт может пригодиться вашей команде.
+
+ЗАПРЕТЫ
+- Не обобщай "корзину", "бонусы", "бонусная система" до "платёжных сценариев", "финтеха", "банковского опыта" или "платёжной системы".
+- Если в фактах есть корзина, бонусы или бонусная система, пиши "корзина", "оформление заказа", "бонусная система", но не "бонусная система", "платёжные сценарии", "финтех" или "банковский опыт".
+- Не пиши "работа с платежами", если в selected_achievements явно нет интеграции оплаты или платёжного шлюза.
+- Лучше не указывай точные версии Flutter в письме.
+- Если нужно упомянуть обновление Flutter, пиши: "обновил проект до актуальной версии Flutter".
+- Запрещено писать "Flutter 16", "Flutter 29", "Flutter 3.16 до 3.29", "с Flutter 16 до версии 29".
+- Не используй фразы: "Этот опыт напрямую связан", "напрямую применим", "напрямую релевантен".
+- Не делай второй абзац шаблонным. Вместо "этот опыт близок к задачам вакансии" объясняй конкретную пользу для команды и продукта.
+- Если вакансия Full Stack или с фокусом на API/интеграции, во втором абзаце делай акцент на архитектуре, сетевом слое, интеграциях и бизнес-логике.
+- Не уходи в медиа, подписки и социальную сеть, если это не связано с вакансией.
+- Не пиши, что кандидат с чем-то "ещё не работал", "не имеет опыта", "не сталкивался".
+- Если прямого опыта нет, связывай вакансию с ближайшим релевантным опытом.
+- Не ослабляй отклик признаниями вроде "с DRM ещё не работал".
+- Не вставляй технические термины из вакансии, если их нет в allowed_tech или selected_achievements.
+- Если DRM, ExoPlayer, Media3, HLS или DASH есть только в вакансии, не пиши эти слова в письме. Пиши обобщённо: "медиаконтент", "офлайн-сценарии", "контентные сценарии".
+"""
+
+
+def _finalizer_user(
+    *,
+    universal_mode: bool,
+    selected_project: str,
+    project_company: str,
+    project_industry: str,
+    project_description: str,
+    hook_phrase: str,
+    selected_numbers: List[str],
+    selected_achievements: List[str],
+    allowed_tech: List[str],
+    openers: List[str],
+    feedback: Optional[str] = None,
+) -> str:
+    mode = (
+        "UNIVERSAL: 1 короткий абзац, 60–90 слов" if universal_mode
+        else "STANDARD: 2 коротких абзаца, 70–110 слов"
+    )
+    parts: List[str] = [
+        f"MODE: {mode}",
+        f"PROJECT: {selected_project}",
+        "PROJECT_FACTS:",
+        f"- company: {project_company}",
+        f"- industry: {project_industry}",
+        f"- description: {project_description}",
+        f"HOOK: {hook_phrase}",
+        f"SELECTED_NUMBERS: {json.dumps(selected_numbers, ensure_ascii=False)}",
+        "ACHIEVEMENTS (разрешённые факты):",
+    ]
+    for a in selected_achievements:
+        parts.append(f"- {a}")
+
+    parts.append("")
+    parts.append("ALLOWED_TECH (используй только эти термины):")
+    for t in allowed_tech[:80]:
+        parts.append(f"- {t}")
+
+    parts.append("")
+    parts.append("OPENERS (используй как смысл для первой фразы, но НЕ выноси отдельной строкой):")
+    for o in openers:
+        parts.append(f"- {o}")
+
+    if feedback:
+        parts.append("")
+        parts.append("FEEDBACK ОТ ВАЛИДАТОРА:")
+        parts.append(feedback)
+        parts.append("Исправь это, но не упоминай feedback в письме.")
+
+    parts.append("")
+    parts.append("СТИЛЬ ДЛЯ ЭТОЙ ГЕНЕРАЦИИ:")
+    parts.append("- Первое предложение сделай адресным под HOOK, но без пересказа вакансии.")
+    parts.append("- Не начинай письмо одинаково, если можно начать с пользы для вакансии.")
+    parts.append("- Во втором абзаце не перечисляй стек. Покажи пользу для продукта и команды.")
+    parts.append("- Заверши мягким предложением обсудить задачи или показать релевантный опыт.")
+    parts.append("- Не используй Dio, Auto Route, go_router, Hive, Retrofit, Provider, Riverpod, MobX в финальном письме.")
+    parts.append("- Не используй слово бонусная система. Пиши бонусная система.")
+    parts.append("")
+    parts.append("СТИЛЬ ДЛЯ ЭТОЙ ГЕНЕРАЦИИ:")
+    parts.append("- Сделай письмо менее шаблонным: не начинай с общей фразы «Увидел вашу вакансию и подумал...»")
+    parts.append("- В первых двух предложениях обязательно укажи 3+ года опыта.")
+    parts.append("- Начинай через релевантный production-опыт или конкретную задачу вакансии.")
+    parts.append("- Покажи 1 сильную production-деталь: релиз, критический сценарий, обработка потери сети, стабильность, интеграция или архитектура.")
+    parts.append("- Не используй числа из вакансии, масштаб компании или claims вроде 1,1 млн пользователей.")
+    parts.append("- Не придумывай impact. Если точных цифр нет, усиливай через результат без числа.")
+    parts.append("- Не используй DRM, ExoPlayer, Media3, HLS, DASH, если этих терминов нет в ACHIEVEMENTS.")
+    parts.append("- Не используй Dio, Auto Route, go_router, Hive, Retrofit, Provider, Riverpod, MobX в финальном письме.")
+    parts.append("- Не используй слово cashback. Пиши бонусная система.")
+    parts.append("- Не заканчивай фразами «Смогу быстро включиться» или «Этот опыт поможет быстро включиться».")
+    parts.append("- Заверши конкретно: «Готов подробнее рассказать о реализации этих сценариев на интервью.» или «Буду рад обсудить, как этот опыт может быть полезен вашей команде.»")
+    parts.append("")
+    parts.append("Напиши письмо по MODE. Верни только письмо, без комментариев.")
+    return "\n".join(parts)
+
+
+async def _final_letter_from_facts(
+    llm: LLMClient,
+    *,
+    analyzer_json: Dict[str, Any],
+    canonical_facts_brief: Dict[str, Any],
+    opener_pool: List[str],
+    universal_mode: bool,
+    feedback: Optional[str] = None,
+    max_tokens: int = 400,
+) -> str:
+    selected_project = str(analyzer_json.get("selected_project") or "")
+    hook_phrase = str(analyzer_json.get("hook_phrase") or "")
+    project_company = str(canonical_facts_brief.get("selected_project_company") or "")
+    project_industry = str(canonical_facts_brief.get("selected_project_industry") or "")
+    project_description = str(canonical_facts_brief.get("selected_project_description") or "")
+    selected_numbers = list(analyzer_json.get("selected_numbers") or [])
+    selected_achievements = list(analyzer_json.get("selected_achievements") or [])
+    allowed_tech = list((canonical_facts_brief or {}).get("allowed_tech") or [])
+
+    return await llm.generate(
+        system_prompt=FINALIZER_SYSTEM,
+        user_prompt=_finalizer_user(
+            universal_mode=universal_mode,
+            selected_project=selected_project,
+            project_company=project_company,
+            project_industry=project_industry,
+            project_description=project_description,
+            hook_phrase=hook_phrase,
+            selected_numbers=selected_numbers,
+            selected_achievements=selected_achievements,
+            allowed_tech=allowed_tech,
+            openers=list(opener_pool),
+            feedback=feedback,
+        ),
+        temperature=0.2,
+        max_tokens=max_tokens,
+        json_mode=False,
+    )
+
+
+async def repair_letter_after_validation(
+    llm: LLMClient,
+    *,
+    letter: str,
+    validation_feedback: str,
+    analyzer_json: Dict[str, Any],
+    canonical_facts_brief: Dict[str, Any],
+    max_tokens: int = 700,
+) -> str:
+    selected_project = str(analyzer_json.get("selected_project") or "")
+    selected_achievements = list(analyzer_json.get("selected_achievements") or [])
+    selected_numbers = list(analyzer_json.get("selected_numbers") or [])
+    allowed_tech = list(canonical_facts_brief.get("allowed_tech") or [])
+
+    system_prompt = """\
+Ты редактор сопроводительных писем.
+
+Твоя задача — исправить готовое письмо по замечаниям валидатора.
+
+ВАЖНО
+- Не переписывай письмо полностью без необходимости.
+- Сохрани стиль и структуру исходного письма.
+- Исправь только проблемы из validation_feedback.
+- Не добавляй новые факты.
+- Не добавляй новые числа.
+- Не добавляй новые технологии.
+- Не меняй выбранный проект.
+- Не увеличивай письмо.
+- Верни только исправленный текст письма.
+"""
+
+    user_prompt = f"""\
+ИСХОДНОЕ ПИСЬМО:
+{letter.strip()}
+
+VALIDATION_FEEDBACK:
+{validation_feedback.strip()}
+
+SELECTED_PROJECT:
+{selected_project}
+
+ALLOWED_ACHIEVEMENTS:
+"""
+    for a in selected_achievements:
+        user_prompt += f"- {a}\n"
+
+    user_prompt += f"""\
+ALLOWED_NUMBERS:
+"""
+    for n in selected_numbers:
+        user_prompt += f"- {n}\n"
+
+    user_prompt += f"""\
+ALLOWED_TECH:
+", ".join(allowed_tech[:30])
+
+Исправь письмо минимально. Верни только финальный текст.
+"""
+
+    return await llm.generate(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        temperature=0.15,
+        max_tokens=max_tokens,
+        json_mode=False,
+    )
+
+
+def _strip_signature_lines(text: str) -> str:
+    """Remove a trailing 'С уважением, …\\n<name>' block if the model added one."""
+    lines = text.splitlines()
+    while lines and not lines[-1].strip():
+        lines.pop()
+
+    for idx in range(len(lines) - 1, -1, -1):
+        stripped = lines[idx].strip().lower()
+        if stripped.startswith("с уважением"):
+            lines = lines[:idx]
+            break
+
+    while lines and not lines[-1].strip():
+        lines.pop()
+
+    return "\n".join(lines).strip()

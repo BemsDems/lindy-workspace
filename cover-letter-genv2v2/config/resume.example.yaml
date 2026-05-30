@@ -1,0 +1,71 @@
+# Anonymized template. Copy to resume.yaml and fill in.
+# Real resume.yaml is git-ignored — never commit personal data.
+
+personal:
+  name: "Иван Иванов"
+  birth_date: "1990-01-01"
+  location: "Москва"
+  relocation: false
+
+contacts:
+  phone: "+7 (000) 000-00-00"
+  email: "you@example.com"
+  telegram: "@yourhandle"
+
+desired:
+  title: "Flutter developer"
+  employment_type: "полная занятость"
+  work_format:
+    - "удалённо"
+    - "гибрид"
+
+summary: |
+  Краткое саммари — 2-3 предложения, без воды.
+
+skills:
+  primary:
+    - Dart
+    - Flutter
+    - BLoC
+    - Clean Architecture
+    - REST API
+  secondary:
+    - Firebase
+    - JWT
+    - Secure Storage
+  soft:
+    - Git
+    - Agile
+
+experience:
+  total_years: 3
+  total_months: 2
+  positions:
+    - title: "Flutter-разработчик"
+      company: "ExampleCo"
+      industry: "Информационные технологии"
+      period_start: "2024-01"
+      period_end: "2025-01"
+      duration_months: 12
+      current: false
+      projects:
+        - name: "ExampleProject"
+          description: "Краткое описание проекта."
+          role: "Flutter-разработчик в команде из N человек"
+          tech_stack:
+            - Flutter
+            - Dart
+            - BLoC
+            - Clean Architecture
+          achievements:
+            - "Спроектировал архитектуру на Clean Architecture с DI."
+            - "Реализовал 5 ключевых модулей со сложной бизнес-логикой."
+            - "Кодовая база 11 000+ строк, модульная архитектура упростила поддержку."
+
+languages:
+  - name: "Русский"
+    level: "Родной"
+    level_code: "C2"
+  - name: "Английский"
+    level: "A2"
+    level_code: "A2"
