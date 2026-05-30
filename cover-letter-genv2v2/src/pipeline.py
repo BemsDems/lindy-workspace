@@ -15,6 +15,20 @@ _recent_picks state leaks. Currently the pipeline relies on the Analyzer's
 LLM-based project selection; if deterministic ProjectSelector override
 is reintroduced, it should be instantiated per-pipeline and merged with
 the analyzer output explicitly.
+
+v4 changes:
+- Stopped force-injecting `facts.experience_years` into `selected_numbers`.
+The previous behavior unconditionally pushed "3" to the front of the
+whitelist, which (combined with the years-anchored opener pool and the
+writer's metric whitelist) caused the canned "3+ года Flutter-разработки"
+opener to surface across unrelated vacancies. If the Analyzer decides
+years matter for a specific vacancy, it will include them in
+selected_numbers explicitly; otherwise the letter is anchored on
+project achievements instead.
+- Removed the `priority_numbers` preserve block. With years no longer
+force-injected, the only special-case numbers are the Flutter migration
+versions (3.0.2, 3.29.0), which are extended directly from selected
+achievements below.
 """
 
 from __future__ import annotations
@@ -141,20 +155,20 @@ class CoverLetterPipeline:
       selected_achievements_for_numbers: List[str] = list(
           analyzer_json.get("selected_achievements") or []
       )
-      achievements_text = "
-".join(str(item) for item in selected_achievements_for_numbers)
+      achievements_text = "\n".join(str(item) for item in selected_achievements_for_numbers)
 
+      # Extend selected_numbers with real Flutter migration versions when they
+      # appear in the selected achievements. This is the only auto-inject we
+      # still do — years of experience are NO LONGER force-injected
+      # (see v4 changes in the module docstring).
       for version in ("3.0.2", "3.29.0"):
           if version in achievements_text and version not in selected_numbers:
               selected_numbers.append(version)
 
-      # Always include years of experience if not present.
-      years = str(self.facts.experience_years)
-      if years not in selected_numbers:
-          selected_numbers.insert(0, years)
-
-      # Limit to 5 numbers max, but preserve years and allowed Flutter versions.
-      priority_numbers = [years, "3.0.2", "3.29.0"]
+      # Cap at 5 numbers max. With years removed from the priority list,
+      # we preserve only Flutter migration versions explicitly; the rest
+      # keeps the Analyzer's original ordering.
+      priority_numbers = ["3.0.2", "3.29.0"]
       preserved: List[str] = []
 
       for number in priority_numbers:
