@@ -9,11 +9,23 @@ logger = logging.getLogger(__name__)
 _DECIMAL_SENTINEL = "\x00DEC\x00"
 _DECIMAL_RE = re.compile(r"(\d+)\.(\d+)")
 
+# Patterns that match a WHOLE sentence (anchored at start, allowed to continue
+# arbitrarily). Each pattern intentionally ends loose so it catches variants
+# like «Буду рад обсудить, чем могу быть полезен вашей команде.»
 _WEAK_ENDING_PATTERNS = [
     r"готов\s+применить",
     r"готов\s+обсудить\s+детали",
+    r"готов\s+обсудить\s+задачи",
+    r"готов\s+обсудить(?!\s+(?:архитектур|показать|метрики|подробност[ия]))",
     r"буду\s+рад\s+обсудить",
     r"с\s+удовольствием\s+обсужу",
+    r"этот\s+опыт\s+поможет",
+    r"этот\s+опыт\s+может\s+быть\s+полезен",
+    r"смогу\s+быстро\s+включиться",
+    r"буду\s+полезен",
+    r"хотел\s+бы\s+обсудить",
+    r"хочу\s+обсудить\s+на\s+собеседовании",
+    r"чем\s+могу\s+быть\s+полезен",
 ]
 _WEAK_ENDING_RE = re.compile(
     r"^\s*(?:" + "|".join(_WEAK_ENDING_PATTERNS) + r")",
@@ -42,6 +54,8 @@ _SIGNATURE_RE = re.compile(
 )
 
 _WORD_RE = re.compile(r"\w+", re.UNICODE)
+
+_PARAGRAPH_SPLIT_RE = re.compile(r"\n\s*\n")
 
 
 def _split_sentences(paragraph: str) -> List[str]:
@@ -88,11 +102,19 @@ def strip_meta_and_signature(text: str) -> str:
 
 
 def strip_stack_dump(text: str) -> str:
-    """Drop sentences that look like a bare stack enumeration."""
-    paragraphs = re.split(r"\n\s*\n", text)
+    """Drop sentences that look like a bare stack enumeration.
+
+    PARAGRAPH-AWARE: processes each paragraph in isolation and re-joins
+    with the original \n\n separators. Never collapses multi-paragraph
+    letters into a single block.
+    """
+    paragraphs = _PARAGRAPH_SPLIT_RE.split(text)
     out_paragraphs: List[str] = []
     for paragraph in paragraphs:
-        sents = _split_sentences(paragraph)
+        stripped = paragraph.strip()
+        if not stripped:
+            continue
+        sents = _split_sentences(stripped)
         kept = [s for s in sents if not _is_stack_dump_sentence(s)]
         if kept:
             out_paragraphs.append(" ".join(kept))
@@ -107,12 +129,16 @@ def strip_weak_ending(text: str) -> str:
     live finals like 'Готов показать архитектуру…' or 'Готов привести
     метрики по проекту…' are preserved.
 
+    PARAGRAPH-AWARE: operates only on the last paragraph and re-joins
+    paragraphs with \n\n separators preserved.
+
     Rollback guard: if removing the weak ending would leave the last
     paragraph with fewer than 2 sentences AND the letter has fewer than
     3 paragraphs total, the removal is rolled back. This protects
     against truncating already-short letters down to a stub.
     """
-    paragraphs = re.split(r"\n\s*\n", text)
+    paragraphs = _PARAGRAPH_SPLIT_RE.split(text)
+    paragraphs = [p.strip() for p in paragraphs if p.strip()]
     if not paragraphs:
         return text
     last = paragraphs[-1]
@@ -138,15 +164,25 @@ def strip_weak_ending(text: str) -> str:
 
 
 def normalize_punctuation(text: str) -> str:
-    text = re.sub(r"\s+([,.;:!?])", r"\1", text)
-    text = re.sub(r"([,.;:!?])([^\s\d])", r"\1 \2", text)
-    text = re.sub(r"([!?.]){2,}", r"\1", text)
-    text = re.sub(r"\s+—\s+", " — ", text)
-    return text
+    """Normalize punctuation INSIDE each paragraph; never touch \n\n boundaries."""
+    paragraphs = _PARAGRAPH_SPLIT_RE.split(text)
+    cleaned: List[str] = []
+    for paragraph in paragraphs:
+        stripped = paragraph.strip()
+        if not stripped:
+            continue
+        item = re.sub(r"\s+([,.;:!?])", r"\1", stripped)
+        item = re.sub(r"([,.;:!?])([^\s\d])", r"\1 \2", item)
+        item = re.sub(r"([!?.]){2,}", r"\1", item)
+        item = re.sub(r"\s+—\s+", " — ", item)
+        cleaned.append(item)
+    return "\n\n".join(cleaned)
 
 
 def normalize_whitespace(text: str) -> str:
+    """Collapse horizontal whitespace and any 3+ newline runs down to \n\n."""
     text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r" *\n *", "\n", text)  # trim spaces around newlines
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
@@ -154,6 +190,10 @@ def normalize_whitespace(text: str) -> str:
 def postprocess_letter(text: str) -> str:
     """Full deterministic clean. Order matters: meta/sig first, then stack,
     then weak ending, then punctuation artefacts, then whitespace.
+
+    All stages are PARAGRAPH-AWARE: they preserve \n\n boundaries so the
+    final letter keeps its visual structure (greeting | body | second
+    paragraph) rather than getting collapsed into one block.
     """
     if not text:
         return text
