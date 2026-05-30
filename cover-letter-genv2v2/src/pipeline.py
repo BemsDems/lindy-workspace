@@ -1,4 +1,4 @@
-"""3-pass orchestrator: Analyze -> Write -> Validate -> (Rewrite up to N).
+"""3-pass orchestrator: Analyze -> Write -> Validate -> (Repair | Rewrite up to N).
 
 v2 changes:
 - Builds a `CanonicalFacts` from the profile once at init.
@@ -6,6 +6,12 @@ v2 changes:
 - Routes low-confidence vacancies to universal-letter mode.
 - Emits richer `GenerationResult` (selected_project, confidence,
 used_numbers, used_tech, attempts, semantic_validator_used).
+
+v3 changes:
+- repair_on_validation_failed=True now actually calls repair_letter_after_validation()
+instead of falling through to a full write_letter() retry.
+- ProjectSelector is instantiated per-pipeline (no module-level singleton),
+preventing _recent_picks state leaks between independent pipeline instances.
 """
 
 from __future__ import annotations
@@ -19,9 +25,10 @@ from .analyzer import analyze
 from .facts import CanonicalFacts, extract_canonical_facts
 from .llm_client import LLMClient
 from .models import Profile, Vacancy
+from .project_selector import ProjectSelector
 from .validator import ValidationResult, validate_deterministic, validate_semantic
 from .postprocess import postprocess_letter
-from .writer import write_letter
+from .writer import repair_letter_after_validation, write_letter
 
 
 logger = logging.getLogger(__name__)
@@ -81,14 +88,14 @@ class PipelineConfig:
   writer_temperature: float = 0.25
   writer_max_tokens: int = 900
   writer_two_pass_editing: bool = False
+  # When True, a failed validation triggers repair_letter_after_validation()
+  # (targeted fix) instead of a full write_letter() retry.
   repair_on_validation_failed: bool = True
   # Confidence threshold: vacancies below this trigger universal-letter mode.
   low_confidence_threshold: float = 0.5
   # Hard cutoff: below this we don't generate at all.
   skip_below_confidence: float = 0.2
   # Per-stage timeout (seconds) for each LLM call wrapped in asyncio.wait_for.
-  # Must be >= llm_client timeout_seconds, otherwise the stage is cut off
-  # mid-request. For slow local models, raise both this and timeout_seconds.
   stage_timeout: float = 300.0
 
 
@@ -97,6 +104,10 @@ class CoverLetterPipeline:
 
   Tracks `used_starts` across `.generate()` calls to encourage variety in
   the first sentence within a single batch.
+
+  Each pipeline instance owns its own ProjectSelector so that diversity
+  state (_recent_picks) never leaks between independent pipeline instances
+  or test cases.
   """
 
   def __init__(
@@ -114,10 +125,15 @@ class CoverLetterPipeline:
       self.facts: CanonicalFacts = extract_canonical_facts(
           profile, forbidden_claims=forbidden_claims
       )
+      # Per-instance selector — no shared singleton state.
+      self._selector: ProjectSelector = ProjectSelector()
 
   async def generate(self, vacancy: Vacancy) -> GenerationResult:
       try:
-          analyzer_json = await asyncio.wait_for(analyze(self.llm, vacancy, self.facts), timeout=self.config.stage_timeout)
+          analyzer_json = await asyncio.wait_for(
+              analyze(self.llm, vacancy, self.facts),
+              timeout=self.config.stage_timeout,
+          )
       except Exception as exc:  # noqa: BLE001
           logger.exception("Analyzer failed for vacancy %s", vacancy.id)
           return _error_result(vacancy, error=f"analyzer: {exc}")
@@ -126,7 +142,9 @@ class CoverLetterPipeline:
       confidence_reason = str(analyzer_json.get("confidence_reason") or "")
       selected_project = str(analyzer_json.get("selected_project") or "")
       selected_numbers: List[str] = list(analyzer_json.get("selected_numbers") or [])
-      selected_achievements_for_numbers: List[str] = list(analyzer_json.get("selected_achievements") or [])
+      selected_achievements_for_numbers: List[str] = list(
+          analyzer_json.get("selected_achievements") or []
+      )
       achievements_text = "\n".join(str(item) for item in selected_achievements_for_numbers)
 
       for version in ("3.0.2", "3.29.0"):
@@ -157,7 +175,9 @@ class CoverLetterPipeline:
       if confidence < self.config.skip_below_confidence:
           logger.info(
               "Vacancy %s: confidence %.2f below skip threshold %.2f — skipping",
-              vacancy.id, confidence, self.config.skip_below_confidence,
+              vacancy.id,
+              confidence,
+              self.config.skip_below_confidence,
           )
           return GenerationResult(
               vacancy_id=vacancy.id,
@@ -182,7 +202,9 @@ class CoverLetterPipeline:
       if universal_mode:
           logger.info(
               "Vacancy %s: confidence %.2f below %.2f — universal mode",
-              vacancy.id, confidence, self.config.low_confidence_threshold,
+              vacancy.id,
+              confidence,
+              self.config.low_confidence_threshold,
           )
 
       feedback: Optional[str] = None
@@ -190,39 +212,75 @@ class CoverLetterPipeline:
       last_result: Optional[ValidationResult] = None
       semantic_used = False
 
+      # Build a compact facts brief for repair calls (mirrors what write_letter uses).
+      from .writer import build_canonical_facts_brief
+      canonical_facts_brief = build_canonical_facts_brief(self.facts, selected_project)
+
       for attempt in range(1, self.config.max_writer_retries + 2):
-          try:
-              last_letter = await asyncio.wait_for(
-                  write_letter(
-                      self.llm,
+          # On attempt > 1 with repair enabled: use targeted repair instead of full rewrite.
+          if attempt > 1 and self.config.repair_on_validation_failed and feedback and last_letter:
+              try:
+                  last_letter = await asyncio.wait_for(
+                      repair_letter_after_validation(
+                          self.llm,
+                          letter=last_letter,
+                          validation_feedback=feedback,
+                          analyzer_json=analyzer_json,
+                          canonical_facts_brief=canonical_facts_brief,
+                          max_tokens=self.config.writer_max_tokens,
+                      ),
+                      timeout=self.config.stage_timeout,
+                  )
+                  last_letter = postprocess_letter(last_letter)
+              except Exception as exc:  # noqa: BLE001
+                  logger.exception(
+                      "Repair failed (attempt %d) for vacancy %s", attempt, vacancy.id
+                  )
+                  return _error_result(
+                      vacancy,
+                      error=f"repair: {exc}",
                       analyzer_json=analyzer_json,
-                      facts=self.facts,
-                      used_starts=self.used_starts,
-                      feedback=feedback,
+                      confidence=confidence,
+                      confidence_reason=confidence_reason,
+                      selected_project=selected_project,
                       universal_mode=universal_mode,
-                      temperature=self.config.writer_temperature,
-                      max_tokens=self.config.writer_max_tokens,
-                      two_pass_editing=self.config.writer_two_pass_editing,
-                      vacancy_title=vacancy.title or "",
-                      vacancy_company=vacancy.company or "",
-                      vacancy_description=vacancy.description or "",
-                      vacancy_requirements=list(vacancy.requirements or []),
-                  ),
-                  timeout=self.config.stage_timeout,
-              )
-              last_letter = postprocess_letter(last_letter)
-          except Exception as exc:  # noqa: BLE001
-              logger.exception("Writer failed (attempt %d) for vacancy %s", attempt, vacancy.id)
-              return _error_result(
-                  vacancy,
-                  error=f"writer: {exc}",
-                  analyzer_json=analyzer_json,
-                  confidence=confidence,
-                  confidence_reason=confidence_reason,
-                  selected_project=selected_project,
-                  universal_mode=universal_mode,
-                  attempts=attempt,
-              )
+                      attempts=attempt,
+                  )
+          else:
+              try:
+                  last_letter = await asyncio.wait_for(
+                      write_letter(
+                          self.llm,
+                          analyzer_json=analyzer_json,
+                          facts=self.facts,
+                          used_starts=self.used_starts,
+                          feedback=feedback,
+                          universal_mode=universal_mode,
+                          temperature=self.config.writer_temperature,
+                          max_tokens=self.config.writer_max_tokens,
+                          two_pass_editing=self.config.writer_two_pass_editing,
+                          vacancy_title=vacancy.title or "",
+                          vacancy_company=vacancy.company or "",
+                          vacancy_description=vacancy.description or "",
+                          vacancy_requirements=list(vacancy.requirements or []),
+                      ),
+                      timeout=self.config.stage_timeout,
+                  )
+                  last_letter = postprocess_letter(last_letter)
+              except Exception as exc:  # noqa: BLE001
+                  logger.exception(
+                      "Writer failed (attempt %d) for vacancy %s", attempt, vacancy.id
+                  )
+                  return _error_result(
+                      vacancy,
+                      error=f"writer: {exc}",
+                      analyzer_json=analyzer_json,
+                      confidence=confidence,
+                      confidence_reason=confidence_reason,
+                      selected_project=selected_project,
+                      universal_mode=universal_mode,
+                      attempts=attempt,
+                  )
 
           if self.config.skip_deterministic_validation:
               det = ValidationResult(
@@ -233,8 +291,6 @@ class CoverLetterPipeline:
                   used_tech=[],
               )
           else:
-              # Deterministic validation is pure regex (synchronous, microseconds):
-              # no await / timeout wrapper needed.
               det = validate_deterministic(
                   last_letter,
                   facts=self.facts,
@@ -249,9 +305,10 @@ class CoverLetterPipeline:
                   last_result = det
                   logger.info(
                       "Vacancy %s: attempt %d failed deterministic validation (%d violations)",
-                      vacancy.id, attempt, len(det.violations),
+                      vacancy.id,
+                      attempt,
+                      len(det.violations),
                   )
-                  # Give up once we've exhausted the configured retries.
                   if attempt >= self.config.max_writer_retries + 1:
                       return GenerationResult(
                           vacancy_id=vacancy.id,
@@ -278,30 +335,32 @@ class CoverLetterPipeline:
               semantic_used = True
               try:
                   sem = await asyncio.wait_for(
-                  validate_semantic(
-                      self.llm,
-                      last_letter,
-                      analyzer_json,
-                      selected_numbers or list(self.facts.allowed_numbers),
-                  ),
-                  timeout=self.config.stage_timeout,
-              )
+                      validate_semantic(
+                          self.llm,
+                          last_letter,
+                          analyzer_json,
+                          selected_numbers or list(self.facts.allowed_numbers),
+                      ),
+                      timeout=self.config.stage_timeout,
+                  )
               except Exception as exc:  # noqa: BLE001
                   logger.warning("Semantic validator errored, treating as passed: %s", exc)
-                  sem = ValidationResult(passed=True, violations=[], word_count=det.word_count)
+                  sem = ValidationResult(
+                      passed=True, violations=[], word_count=det.word_count
+                  )
 
               if not sem.passed:
                   feedback = sem.format_feedback()
-                  # Preserve det.used_numbers/used_tech (semantic doesn't compute them).
                   sem.used_numbers = det.used_numbers
                   sem.used_tech = det.used_tech
                   last_result = sem
                   logger.info(
                       "Vacancy %s: attempt %d failed semantic validation (%d violations)",
-                      vacancy.id, attempt, len(sem.violations),
+                      vacancy.id,
+                      attempt,
+                      len(sem.violations),
                   )
                   continue
-              # Semantic passed — merge det's used_* into the result.
               sem.used_numbers = det.used_numbers
               sem.used_tech = det.used_tech
               last_result = sem
