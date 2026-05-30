@@ -1,0 +1,38 @@
+[project]
+name = "vacancy-agent"
+version = "0.1.0"
+description = "CLI tool for collecting vacancies and preparing cover-letter drafts"
+requires-python = ">=3.10"
+dependencies = [
+    "typer>=0.9.0",
+    "rich>=13.0.0",
+    "playwright>=1.40.0",
+    "beautifulsoup4>=4.12.0",
+    "requests>=2.31.0",
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.1.0",
+    "python-dotenv>=1.0.0",
+    "PyYAML>=6.0",
+    "Jinja2>=3.1.0",
+    "openpyxl>=3.1.0",
+    "loguru>=0.7.0",
+    "httpx>=0.27",
+    "tenacity>=8.2",
+
+]
+
+[project.scripts]
+vacancy-cli = "vacancy_agent.cli:app"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["vacancy_agent*"]
+exclude = ["data*", "logs*", "templates*", "references*"]

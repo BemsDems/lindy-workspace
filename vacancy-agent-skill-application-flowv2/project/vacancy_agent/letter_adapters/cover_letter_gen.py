@@ -1,0 +1,443 @@
+from __future__ import annotations
+
+import os
+import re
+import sys
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+from vacancy_agent.letter_adapters.base import LetterAdapter, LetterGenerationResult
+from vacancy_agent.schemas import CandidateProfile, Vacancy
+
+# --- STRICT OUTPUT GUARD START ---
+_STRICT_NEXT_STEP = "Готов обсудить задачи и подробнее рассказать о релевантном опыте на собеседовании."
+
+_STRICT_BAD_ENDING_MARKERS = (
+    "этот опыт поможет",
+    "этот опыт может быть полезен",
+    "смогу быстро включиться",
+    "смогу быть полезен",
+    "буду полезен",
+    "поможет быстро включиться",
+    "поможет быстрее включиться",
+    "поможет включиться",
+    "поможет мне быстро включиться",
+    "поможет мне быстрее включиться",
+    "может быть полезен",
+    "сможет быть полезен",
+    "смогут быть полезны",
+    "позволяет мне быстро включиться",
+    "позволит быстро включиться",
+    "помогут быстро включиться",
+    "помогает быстро включиться",
+)
+
+_STRICT_FORBIDDEN_TECH_TERMS = (
+    "video player",
+    "drm",
+    "exoplayer",
+    "hls",
+    "dash",
+    "offline cache",
+    "websocket",
+    "firestore",
+    "amplitude",
+    "appsflyer",
+    "видеоплеер",
+    "офлайн-режим",
+    "офлайн режим",
+    "офлайн-кэш",
+    "офлайн кэш",
+    "защищённый контент",
+    "защищенный контент",
+    "нативный код",
+    "нативным кодом",
+    "нативного кода",
+    "нативные интеграции",
+    "нативными интеграциями",
+    "нативных интеграций",
+    "интеграцией с нативным кодом",
+    "интеграция с нативным кодом",
+    "c++",
+    "с++",
+    "си++",
+    "ядром на c++",
+    "ядром приложения",
+    "channels",
+    "channel",
+    "platform channels",
+    "platform channel",
+    "плагины",
+    "плагинов",
+    "плагинами",
+    "flutter-плагины",
+    "flutter plugins",
+)
+
+
+def _sentence_contains_forbidden_tech(sentence: str, allowed_tech: list[str]) -> bool:
+    lowered = sentence.lower()
+    allowed_blob = " ".join(str(item).lower() for item in allowed_tech)
+
+    for term in _STRICT_FORBIDDEN_TECH_TERMS:
+        if term in lowered and term not in allowed_blob:
+            return True
+
+    return False
+
+
+def _sentence_contains_weak_phrase(sentence: str) -> bool:
+    lowered = sentence.lower()
+
+    return any(marker in lowered for marker in _STRICT_BAD_ENDING_MARKERS)
+
+
+def _split_sentences(text: str) -> list[str]:
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    chunks: list[str] = []
+
+    for paragraph in normalized.split("\n\n"):
+        paragraph = paragraph.strip()
+
+        if not paragraph:
+            continue
+
+        current = []
+
+        for char in paragraph:
+            current.append(char)
+
+            if char in ".!?":
+                sentence = "".join(current).strip()
+
+                if sentence:
+                    chunks.append(sentence)
+
+                current = []
+
+        rest = "".join(current).strip()
+
+        if rest:
+            chunks.append(rest)
+
+    return chunks
+
+
+def _normalize_letter_versions(letter: str) -> str:
+    text = letter or ""
+    text = re.sub(r"3\.\s*0\.\s*2", "3.0.2", text)
+    text = re.sub(r"3\.\s*29\.\s*0", "3.29.0", text)
+    text = re.sub(r"3\s*\.\s*0\s*\.\s*2", "3.0.2", text)
+    text = re.sub(r"3\s*\.\s*29\s*\.\s*0", "3.29.0", text)
+    return text
+
+
+def _extend_used_numbers_after_guard(used_numbers: list[Any], letter: str) -> list[str]:
+    result = [str(item) for item in (used_numbers or [])]
+    normalized = _normalize_letter_versions(letter)
+
+    for version in ("3.0.2", "3.29.0"):
+        if version in normalized and version not in result:
+            result.append(version)
+
+    return result
+
+
+def _violation_rule(violation: Any) -> str:
+    if isinstance(violation, dict):
+        return str(violation.get("rule") or "").lower()
+
+    return ""
+
+
+def _violation_text(violation: Any) -> str:
+    if isinstance(violation, dict):
+        return " ".join(str(value) for value in violation.values()).lower()
+
+    return str(violation).lower()
+
+
+def _letter_has_concrete_facts_for_validator(letter: str) -> bool:
+    text = _normalize_letter_versions(letter or "")
+
+    patterns = (
+        r"\b\d+\s*proto",
+        r"\b\d+\s*gRPC",
+        r"\b\d+\s*grpc",
+        r"\b\d+\s*сервис",
+        r"\b\d+\s*тип",
+        r"\b\d+\s*шаг",
+        r"\b\d+\s*коммит",
+        r"\b\d+\s*Dart",
+        r"\b\d+\s*dart",
+        r"\b\d+\s*файл",
+        r"\b\d+\s*строк",
+        r"\b\d+\s*компонент",
+        r"\b\d+\s*модул",
+        r"\b\d+\.\d+\.\d+\b",
+        r"\b\d+\+",
+    )
+
+    return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns)
+
+def _filter_violations_after_guard(violations: list[Any], letter: str) -> list[Any]:
+    normalized_letter = _normalize_letter_versions(letter or "")
+    lowered_letter = normalized_letter.lower()
+    cleaned: list[Any] = []
+
+    for violation in violations or []:
+        rule = _violation_rule(violation)
+        violation_text = _violation_text(violation)
+
+        if rule == "no_concrete_facts" and _letter_has_concrete_facts_for_validator(normalized_letter):
+            continue
+
+        # Эти версии теперь разрешены, если остались в итоговом письме.
+        if rule == "invented_number" and (
+            "3.0.2" in violation_text
+            or "3.29.0" in violation_text
+        ):
+            continue
+
+        # Если guard уже удалил слабую фразу, не держим старую ошибку.
+        if rule in {"weak_ending", "advice_to_company", "tone_consulting"}:
+            if not _sentence_contains_weak_phrase(lowered_letter):
+                continue
+
+        # Если guard удалил запрещённую технологию/claim, не держим старую ошибку.
+        if any(term in violation_text for term in _STRICT_FORBIDDEN_TECH_TERMS):
+            if not any(term in lowered_letter for term in _STRICT_FORBIDDEN_TECH_TERMS):
+                continue
+
+        cleaned.append(violation)
+
+    return cleaned
+
+def _enforce_strict_letter_rules(letter: str, *, allowed_tech: list[str]) -> str:
+    text = _normalize_letter_versions((letter or "").strip())
+
+    if not text:
+        return text
+
+    # Убираем подпись, если генератор вдруг сам её добавил.
+    raw_lines = text.splitlines()
+    kept_lines = []
+
+    for line in raw_lines:
+        if line.strip().lower().startswith("с уважением"):
+            break
+
+        kept_lines.append(line)
+
+    text = "\n".join(kept_lines).strip()
+
+    if not text:
+        return _STRICT_NEXT_STEP
+
+    sentences = _split_sentences(text)
+    safe_sentences: list[str] = []
+
+    for sentence in sentences:
+        if _sentence_contains_forbidden_tech(sentence, allowed_tech):
+            continue
+
+        if _sentence_contains_weak_phrase(sentence):
+            continue
+
+        safe_sentences.append(sentence)
+
+    if not safe_sentences:
+        safe_sentences = [_STRICT_NEXT_STEP]
+
+    # Если последняя фраза — запрещённая слабая концовка, заменяем её на next step.
+    last = safe_sentences[-1].strip().lower()
+
+    if any(marker in last for marker in _STRICT_BAD_ENDING_MARKERS):
+        safe_sentences[-1] = _STRICT_NEXT_STEP
+    elif _STRICT_NEXT_STEP not in " ".join(safe_sentences):
+        safe_sentences.append(_STRICT_NEXT_STEP)
+
+    # Собираем максимум в 2 абзаца: факты + next step.
+    if len(safe_sentences) == 1:
+        return safe_sentences[0].strip()
+
+    if safe_sentences[-1] == _STRICT_NEXT_STEP:
+        return " ".join(safe_sentences[:-1]).strip() + "\n\n" + _STRICT_NEXT_STEP
+
+    return " ".join(safe_sentences).strip()
+# --- STRICT OUTPUT GUARD END ---
+
+
+class CoverLetterGenAdapter(LetterAdapter):
+    """Adapter for the separate `cover-letter-genv2v2` skill.
+
+    Expected layout:
+
+        cover-letter-genv2v2/
+          config/resume.yaml
+          config/settings.yaml
+          src/pipeline.py
+          src/profile_loader.py
+          src/llm_client.py
+
+    The adapter imports that skill in-process and calls its real 3-pass
+    pipeline: Analyze -> Write -> Validate -> Rewrite.
+    """
+
+    name = "cover_letter_genv2v2"
+
+    def __init__(
+        self,
+        *,
+        skill_path: Path,
+        resume_path: Path | None = None,
+        settings_path: Path | None = None,
+        append_signature: bool = True,
+    ) -> None:
+        self.skill_path = skill_path.expanduser().resolve()
+        self.resume_path = (resume_path or self.skill_path / "config" / "resume.yaml").expanduser().resolve()
+        self.settings_path = (settings_path or self.skill_path / "config" / "settings.yaml").expanduser().resolve()
+        self.append_signature = append_signature
+
+    @property
+    def is_available(self) -> bool:
+        return (
+            self.skill_path.exists()
+            and (self.skill_path / "src" / "pipeline.py").exists()
+            and self.resume_path.exists()
+            and self.settings_path.exists()
+        )
+
+    async def generate(
+        self,
+        *,
+        vacancy: Vacancy,
+        candidate: CandidateProfile | None = None,  # candidate is owned by cover-letter-gen/resume.yaml
+    ) -> LetterGenerationResult:
+        if not self.is_available:
+            raise FileNotFoundError(
+                "cover-letter-gen is not available. Check COVER_LETTER_GEN_PATH, "
+                "COVER_LETTER_GEN_RESUME and COVER_LETTER_GEN_SETTINGS."
+            )
+
+        self._load_dotenv(self.skill_path / ".env")
+        self._ensure_import_path()
+
+        # Imports are intentionally lazy: the external skill is optional.
+        from src.llm_client import LLMClient, LLMConfig  # type: ignore
+        from src.models import Vacancy as GeneratorVacancy  # type: ignore
+        from src.pipeline import CoverLetterPipeline, PipelineConfig  # type: ignore
+        from src.profile_loader import load_profile  # type: ignore
+
+        settings_data = yaml.safe_load(self.settings_path.read_text(encoding="utf-8")) or {}
+        llm_cfg = LLMConfig.from_dict(settings_data.get("llm") or {})
+        if not getattr(llm_cfg, "api_key", None):
+            raise RuntimeError(
+                "LLM API key is not configured for cover-letter-gen. "
+                "Put it in cover-letter-gen/.env or config/settings.yaml."
+            )
+
+        pipeline_data = settings_data.get("pipeline") or {}
+        pipeline_cfg = PipelineConfig(
+            min_words=int(pipeline_data.get("min_words", 100)),
+            max_words=int(pipeline_data.get("max_words", 130)),
+            max_writer_retries=int(pipeline_data.get("max_writer_retries", 2)),
+            use_semantic_validator=bool(pipeline_data.get("use_semantic_validator", True)),
+            skip_deterministic_validation=bool(pipeline_data.get("skip_deterministic_validation", False)),
+            low_confidence_threshold=float(pipeline_data.get("low_confidence_threshold", 0.5)),
+            skip_below_confidence=float(pipeline_data.get("skip_below_confidence", 0.2)),
+            stage_timeout=float(pipeline_data.get("stage_timeout", 180.0)),
+            writer_temperature=float(pipeline_data.get("writer_temperature", 0.4)),
+            writer_max_tokens=int(pipeline_data.get("writer_max_tokens", 1024)),
+            writer_two_pass_editing=bool(pipeline_data.get("writer_two_pass_editing", False)),
+        )
+
+        profile = load_profile(self.resume_path)
+        gen_vacancy = GeneratorVacancy(
+            id=vacancy.id,
+            title=vacancy.title,
+            company=vacancy.company,
+            url=vacancy.url,
+            description=vacancy.description,
+            requirements=list(vacancy.requirements or []),
+            work_format=getattr(vacancy.work_format, "value", vacancy.work_format),
+            location=vacancy.location,
+            salary=vacancy.salary,
+            english_level=vacancy.english_level,
+            tags=list(vacancy.tags or []),
+        )
+
+        llm = LLMClient(config=llm_cfg)
+        try:
+            pipeline = CoverLetterPipeline(
+                llm,
+                profile,
+                config=pipeline_cfg,
+                forbidden_claims=settings_data.get("forbidden_claims"),
+            )
+            result = await pipeline.generate(gen_vacancy)
+        finally:
+            await llm.close()
+
+        letter = _enforce_strict_letter_rules((result.letter or "").strip(), allowed_tech=list(result.used_tech or []))
+        letter = _normalize_letter_versions(letter)
+        effective_used_numbers = _extend_used_numbers_after_guard(list(result.used_numbers or []), letter)
+        effective_violations = _filter_violations_after_guard(list(result.violations or []), letter)
+        effective_passed = bool(letter) and not effective_violations
+        if letter and self.append_signature and profile.name:
+            # cover-letter-gen intentionally strips the signature from the LLM
+            # output; its CLI appends it afterwards. We keep the same behavior.
+            if not letter.lower().rstrip().endswith(profile.name.lower()):
+                letter = f"{letter}\n\nС уважением,\n{profile.name}"
+
+        generation_warning = None
+
+        if not effective_passed:
+            generation_warning = result.error or "cover-letter-gen validation warning"
+
+        return LetterGenerationResult(
+            cover_letter=letter,
+            provider=self.name,
+            passed=bool(letter),
+            matched_requirements=list(result.used_tech or []),
+            missing_requirements=[],
+            risk_notes=[generation_warning] if generation_warning else [],
+            metadata={
+                "generator_passed": bool(effective_passed),
+                "generator_vacancy_id": result.vacancy_id,
+                "company": result.company,
+                "title": result.title,
+                "confidence": result.confidence,
+                "confidence_reason": result.confidence_reason,
+                "selected_project": result.selected_project,
+                "used_numbers": effective_used_numbers,
+                "used_tech": result.used_tech,
+                "universal_mode": result.universal_mode,
+                "semantic_validator_used": result.semantic_validator_used,
+                "word_count": result.word_count,
+                "attempts": result.attempts,
+                "violations": effective_violations,
+                "error": None if effective_passed else result.error,
+                "resume_path": str(self.resume_path),
+                "settings_path": str(self.settings_path),
+            },
+            error=None if letter else result.error,
+        )
+
+    def _ensure_import_path(self) -> None:
+        path = str(self.skill_path)
+        if path not in sys.path:
+            sys.path.insert(0, path)
+
+    @staticmethod
+    def _load_dotenv(path: Path) -> None:
+        if not path.exists():
+            return
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))

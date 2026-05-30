@@ -1,0 +1,20 @@
+[
+  {
+    "id": "722d06f0a7",
+    "name": "hh-python",
+    "url": "https://hh.ru/search/vacancy?text=Python&area=1&date_from=2026-05-08",
+    "type": "playwright",
+    "enabled": true,
+    "settings": {},
+    "selectors": {}
+  },
+  {
+    "id": "7fe33f1992",
+    "name": "hirify",
+    "url": "https://hirify.me/",
+    "type": "playwright",
+    "enabled": true,
+    "settings": {},
+    "selectors": {}
+  }
+]

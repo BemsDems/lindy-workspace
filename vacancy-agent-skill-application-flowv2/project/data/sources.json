@@ -1,0 +1,33 @@
+[
+  {
+    "id": "hh-flutter-russia",
+    "name": "hh-flutter-russia",
+    "url": "https://nalchik.hh.ru/search/vacancy?hhtmFrom=main&hhtmFromLabel=vacancy_search_line&search_field=name&search_field=company_name&enable_snippets=false&L_save_area=true&text=flutter&area=113",
+    "type": "playwright",
+    "enabled": true,
+    "settings": {
+      "country": "Россия"
+    },
+    "selectors": {}
+  },
+  {
+    "id": "hh-flutter-belarus",
+    "name": "hh-flutter-belarus",
+    "url": "https://nalchik.hh.ru/search/vacancy?hhtmFrom=main&hhtmFromLabel=vacancy_search_line&search_field=name&search_field=company_name&enable_snippets=false&L_save_area=true&text=flutter&area=16",
+    "type": "playwright",
+    "enabled": true,
+    "settings": {
+      "country": "Беларусь"
+    },
+    "selectors": {}
+  },
+  {
+    "id": "hh-flutter-any",
+    "name": "hh-flutter-any",
+    "url": "https://nalchik.hh.ru/search/vacancy?hhtmFrom=main&hhtmFromLabel=vacancy_search_line&search_field=name&search_field=company_name&enable_snippets=false&L_save_area=true&text=flutter",
+    "type": "playwright",
+    "enabled": true,
+    "settings": {},
+    "selectors": {}
+  }
+]

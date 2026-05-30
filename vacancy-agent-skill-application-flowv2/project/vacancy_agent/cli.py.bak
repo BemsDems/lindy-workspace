@@ -1,0 +1,440 @@
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+from typing import Optional
+
+import typer
+from pydantic import HttpUrl, ValidationError
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+
+from vacancy_agent import __version__
+from vacancy_agent.apply_manager import apply_manager
+from vacancy_agent.browser import browser_manager
+from vacancy_agent.config import CANDIDATE_PROFILE_FILE, DATA_DIR
+from vacancy_agent.cover_letter import ensure_default_template
+from vacancy_agent.export import export_to_csv, export_to_json, export_to_xlsx
+from vacancy_agent.runner import runner
+from vacancy_agent.schemas import CandidateProfile, SearchParams, SourceType, VacancySource, VacancyStatus
+from vacancy_agent.storage import storage
+from vacancy_agent.utils.ids import make_id
+
+app = typer.Typer(
+    name="vacancy-cli",
+    help="CLI-инструмент для сбора вакансий и подготовки откликов",
+    add_completion=False,
+)
+console = Console()
+
+
+@app.command()
+def mark_applied(
+    vacancy_id: Optional[str] = typer.Option(None, "--id", help="Vacancy id in local DB"),
+    vacancy_url: Optional[str] = typer.Option(None, "--url", help="Vacancy URL"),
+) -> None:
+    """Manually mark a vacancy as applied by us.
+
+    Supports lookup by either `--id` or `--url` (or both).
+    Sets `applied_by_us=true` in the stored vacancy record.
+    """
+
+    if not vacancy_id and not vacancy_url:
+        console.print("[red]Provide --id or --url[/red]")
+        raise typer.Exit(1)
+
+    vacancies = storage.load_vacancies()
+    updated = 0
+    for v in vacancies:
+        if vacancy_id and v.id == vacancy_id:
+            v.applied_by_us = True
+            updated += 1
+            continue
+        if vacancy_url and v.url == vacancy_url:
+            v.applied_by_us = True
+            updated += 1
+
+    if updated == 0:
+        console.print("[yellow]No matching vacancy found[/yellow]")
+        raise typer.Exit(2)
+
+    storage.save_vacancies(vacancies)
+    console.print(f"[green]Marked applied_by_us=true for {updated} vacancy record(s)[/green]")
+
+
+@app.command()
+def init_profile() -> None:
+    """Создать шаблон профиля кандидата и шаблон письма."""
+    if CANDIDATE_PROFILE_FILE.exists():
+        console.print(f"[yellow]Профиль уже существует: {CANDIDATE_PROFILE_FILE}[/yellow]")
+    else:
+        profile = CandidateProfile(
+            name="Иван Петров",
+            position="Python разработчик",
+            experience=(
+                "Есть опыт разработки веб-приложений и API на Python. "
+                "Работал с backend-логикой, базами данных, Git и Docker."
+            ),
+            skills=["Python", "REST API", "SQL", "Git"],
+            tech_stack=["Python", "FastAPI", "Django", "PostgreSQL", "Docker"],
+            strengths=["Внимательно отношусь к качеству кода", "Умею разбираться в новых задачах"],
+            projects=["CLI-инструмент для сбора и структурирования вакансий"],
+            contacts={"email": "your@email.com", "telegram": "@username"},
+            restrictions=["не указывать несуществующий коммерческий опыт"],
+            preferred_work_format="remote",
+            desired_salary="от 100000",
+        )
+        storage.save_candidate_profile(profile)
+        console.print(f"[green]Создан профиль: {CANDIDATE_PROFILE_FILE}[/green]")
+
+    ensure_default_template()
+    console.print("[green]Шаблон сопроводительного письма готов[/green]")
+
+
+@app.command()
+def add_source(
+    name: str = typer.Option(..., "--name", "-n", help="Название источника"),
+    url: str = typer.Option(..., "--url", "-u", help="URL страницы с вакансиями"),
+    source_type: SourceType = typer.Option(SourceType.PLAYWRIGHT, "--type", "-t", help="Тип источника"),
+    vacancy_link_selector: Optional[str] = typer.Option(None, "--vacancy-link-selector", help="CSS-селектор ссылок на вакансии"),
+    title_selector: Optional[str] = typer.Option(None, "--title-selector", help="CSS-селектор заголовка вакансии"),
+    company_selector: Optional[str] = typer.Option(None, "--company-selector", help="CSS-селектор компании"),
+    description_selector: Optional[str] = typer.Option(None, "--description-selector", help="CSS-селектор описания"),
+    query_param: Optional[str] = typer.Option(None, "--query-param", help="Имя query-параметра для должности"),
+    city_param: Optional[str] = typer.Option(None, "--city-param", help="Имя query-параметра для города"),
+) -> None:
+    """Добавить источник вакансий."""
+    try:
+        validated_url = str(HttpUrl(url))
+    except ValidationError:
+        console.print("[red]Invalid URL[/red]")
+        raise typer.Exit(1)
+
+    sources = storage.load_sources()
+    source_id = make_id(validated_url, length=10)
+
+    if any(item.id == source_id for item in sources):
+        console.print("[yellow]Источник с таким URL уже существует[/yellow]")
+        return
+
+    selectors = {}
+    if vacancy_link_selector:
+        selectors["vacancy_link"] = vacancy_link_selector
+    if title_selector:
+        selectors["title"] = title_selector
+    if company_selector:
+        selectors["company"] = company_selector
+    if description_selector:
+        selectors["description"] = description_selector
+
+    settings = {}
+    if query_param:
+        settings["query_param"] = query_param
+    if city_param:
+        settings["city_param"] = city_param
+
+    source = VacancySource(
+        id=source_id,
+        name=name,
+        url=validated_url,
+        type=source_type,
+        selectors=selectors,
+        settings=settings,
+    )
+    sources.append(source)
+    storage.save_sources(sources)
+
+    console.print(f"[green]Источник добавлен:[/green] {name} ({source_id})")
+
+
+@app.command("sources")
+def list_sources() -> None:
+    """Показать сохранённые источники."""
+    sources = storage.load_sources()
+    if not sources:
+        console.print("[yellow]Источники не добавлены[/yellow]")
+        return
+
+    table = Table(title="Источники")
+    table.add_column("ID", style="cyan")
+    table.add_column("Название", style="green")
+    table.add_column("URL")
+    table.add_column("Тип")
+    table.add_column("Статус")
+
+    for source in sources:
+        table.add_row(source.id, source.name, source.url[:70], source.type.value, "on" if source.enabled else "off")
+
+    console.print(table)
+
+
+@app.command("search-url")
+def search_url(
+    urls: list[str] = typer.Argument(..., help="URL страниц с вакансиями"),
+    query: Optional[str] = typer.Option(None, "--query", "-q", help="Должность"),
+    city: Optional[str] = typer.Option(None, "--city", "-c", help="Город"),
+    remote: bool = typer.Option(False, "--remote", help="Только удалёнка"),
+    max_pages: int = typer.Option(1, "--max-pages", help="Максимум страниц"),
+    max_vacancies: int = typer.Option(30, "--max-vacancies", help="Максимум вакансий на источник"),
+    allow_hh_actions: bool = typer.Option(
+        False,
+        "--allow-hh-actions",
+        help="(HH) Разрешить аккаунтные действия (например автоклик 'Поднять'). По умолчанию read-only.",
+    ),
+    cdp_url: Optional[str] = typer.Option(
+        None,
+        "--cdp",
+        "--cdp-url",
+        help="CDP endpoint браузера, например http://127.0.0.1:9222",
+    ),
+) -> None:
+    """Искать вакансии по прямым URL без предварительного добавления источника."""
+    browser_manager.configure(cdp_url=cdp_url)
+    params = SearchParams(
+        query=query,
+        city=city,
+        remote=remote,
+        max_pages=max_pages,
+        max_vacancies=max_vacancies,
+        allow_hh_actions=allow_hh_actions,
+    )
+
+    with console.status("[bold green]Сбор вакансий...[/bold green]"):
+        vacancies = asyncio.run(runner.search_urls(urls, params))
+
+    console.print(f"[green]Собрано новых/обновлённых вакансий: {len(vacancies)}[/green]")
+    _print_vacancies(vacancies[:10])
+
+
+@app.command("search")
+def search_sources(
+    source: Optional[str] = typer.Option(None, "--source", "-s", help="ID или имя источника"),
+    query: Optional[str] = typer.Option(None, "--query", "-q", help="Должность"),
+    city: Optional[str] = typer.Option(None, "--city", "-c", help="Город"),
+    remote: bool = typer.Option(False, "--remote", help="Только удалёнка"),
+    max_pages: int = typer.Option(1, "--max-pages", help="Максимум страниц"),
+    max_vacancies: int = typer.Option(30, "--max-vacancies", help="Максимум вакансий на источник"),
+    allow_hh_actions: bool = typer.Option(
+        False,
+        "--allow-hh-actions",
+        help="(HH) Разрешить аккаунтные действия (например автоклик 'Поднять'). По умолчанию read-only.",
+    ),
+    cdp_url: Optional[str] = typer.Option(
+        None,
+        "--cdp",
+        "--cdp-url",
+        help="CDP endpoint браузера, например http://127.0.0.1:9222",
+    ),
+) -> None:
+    """Искать вакансии по сохранённым источникам."""
+    browser_manager.configure(cdp_url=cdp_url)
+    sources = storage.load_sources()
+    if source:
+        found = storage.find_source(source)
+        if not found:
+            console.print(f"[red]Источник не найден: {source}[/red]")
+            raise typer.Exit(1)
+        sources = [found]
+
+    if not sources:
+        console.print("[yellow]Нет источников. Используй add-source или search-url.[/yellow]")
+        raise typer.Exit(1)
+
+    params = SearchParams(
+        query=query,
+        city=city,
+        remote=remote,
+        max_pages=max_pages,
+        max_vacancies=max_vacancies,
+        allow_hh_actions=allow_hh_actions,
+    )
+
+    with console.status("[bold green]Сбор вакансий...[/bold green]"):
+        vacancies = asyncio.run(runner.search_sources(sources, params))
+
+    console.print(f"[green]Собрано новых/обновлённых вакансий: {len(vacancies)}[/green]")
+    _print_vacancies(vacancies[:10])
+
+
+@app.command("list")
+def list_vacancies(
+    status: Optional[VacancyStatus] = typer.Option(
+        VacancyStatus.NEW,
+        "--status",
+        help="Фильтр по статусу (по умолчанию: только новые)",
+    ),
+    all: bool = typer.Option(False, "--all", help="Показать все вакансии (снимает фильтр по статусу)"),
+    limit: int = typer.Option(30, "--limit", "-l", help="Сколько показать"),
+) -> None:
+    """Показать сохранённые вакансии.
+
+    По умолчанию показывает только новые (status=new). Чтобы увидеть просмотренные и остальные,
+    используй --all или --status <value>.
+    """
+    vacancies = storage.load_vacancies()
+
+    if all:
+        status = None
+
+    if status:
+        vacancies = [vacancy for vacancy in vacancies if vacancy.status == status]
+
+    if not vacancies:
+        console.print("[yellow]Вакансии не найдены[/yellow]")
+        return
+
+    _print_vacancies(vacancies[:limit])
+
+
+@app.command()
+def show(vacancy_id: str) -> None:
+    """Показать вакансию подробно.
+
+    Если вакансия была новой, помечает её как просмотренную (viewed).
+    """
+    vacancy = storage.find_vacancy(vacancy_id)
+    if not vacancy:
+        console.print(f"[red]Вакансия не найдена: {vacancy_id}[/red]")
+        raise typer.Exit(1)
+
+    if vacancy.status == VacancyStatus.NEW:
+        storage.update_vacancy_status(vacancy.id, VacancyStatus.VIEWED)
+        vacancy = storage.find_vacancy(vacancy.id) or vacancy
+
+    body = (
+        f"[bold]{vacancy.title}[/bold]\n"
+        f"Компания: {vacancy.company}\n"
+        f"Зарплата: {vacancy.salary or 'не указана'}\n"
+        f"Локация: {vacancy.location or 'не указана'}\n"
+        f"Формат: {vacancy.work_format.value}\n"
+        f"Занятость: {getattr(vacancy, 'employment_type', None) or 'не указано'}\n"
+        f"Опыт: {getattr(vacancy, 'experience', None) or 'не указано'}\n"
+        f"График: {getattr(vacancy, 'work_schedule', None) or 'не указано'}\n"
+        f"Часы: {getattr(vacancy, 'working_hours', None) or 'не указано'}\n"
+        f"Источник: {vacancy.source_name}\n"
+        f"Статус: {vacancy.status.value}\n"
+        f"URL: {vacancy.url}\n\n"
+        f"[bold]Описание:[/bold]\n{vacancy.description or 'нет описания'}"
+    )
+    console.print(Panel(body, title=f"Вакансия {vacancy.id}", border_style="blue"))
+
+
+@app.command()
+def open(
+    vacancy_id: str,
+    include_viewed: bool = typer.Option(False, "--include-viewed", help="Разрешить открывать уже просмотренные вакансии"),
+) -> None:
+    """Открыть вакансию в браузере.
+
+    По умолчанию открывает только новые вакансии и помечает их как viewed.
+    """
+    # Reuse a single Playwright tab instead of spawning a new external browser window.
+    vacancy = storage.find_vacancy(vacancy_id)
+    if not vacancy:
+        console.print(f"[red]Вакансия не найдена: {vacancy_id}[/red]")
+        raise typer.Exit(1)
+
+    if (not include_viewed) and vacancy.status != VacancyStatus.NEW:
+        console.print(
+            f"[yellow]Вакансия уже не новая (status={vacancy.status.value}). "
+            f"Используй --include-viewed чтобы открыть её.[/yellow]"
+        )
+        raise typer.Exit(1)
+
+    # Mark as viewed on open
+    if vacancy.status == VacancyStatus.NEW:
+        storage.update_vacancy_status(vacancy.id, VacancyStatus.VIEWED)
+
+    # Navigate the shared page to the vacancy URL (replaces address, does not open a new tab).
+    async def _navigate():
+        page = await browser_manager.get_shared_page()
+        await page.goto(vacancy.url, wait_until="domcontentloaded", timeout=settings.browser_timeout_ms)
+        await browser_manager.random_delay()
+    asyncio.run(_navigate())
+    console.print(f"[green]Открыто (перейдено к):[/green] {vacancy.url}")
+
+
+@app.command()
+def apply(vacancy_id: str) -> None:
+    """Подготовить сопроводительное письмо и черновик отклика."""
+    ok = apply_manager.apply_to_vacancy(vacancy_id)
+    if not ok:
+        raise typer.Exit(1)
+
+
+@app.command()
+def export(
+    format: str = typer.Option("json", "--format", "-f", help="json/csv/xlsx"),
+    output: Optional[Path] = typer.Option(None, "--output", "-o", help="Путь к файлу"),
+) -> None:
+    """Экспортировать вакансии."""
+    vacancies = storage.load_vacancies()
+    if not vacancies:
+        console.print("[yellow]Нет вакансий для экспорта[/yellow]")
+        return
+
+    if not output:
+        output = DATA_DIR / f"vacancies_export.{format}"
+
+    if format == "json":
+        export_to_json(vacancies, output)
+    elif format == "csv":
+        export_to_csv(vacancies, output)
+    elif format == "xlsx":
+        export_to_xlsx(vacancies, output)
+    else:
+        console.print("[red]Поддерживаются только json/csv/xlsx[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"[green]Экспорт готов:[/green] {output}")
+
+
+@app.command()
+def status() -> None:
+    """Показать статистику."""
+    stats = storage.get_stats()
+    console.print(Panel.fit("Статус Vacancy Agent", border_style="blue"))
+    console.print(f"Всего вакансий: [bold]{stats['vacancies_total']}[/bold]")
+    console.print(f"Черновиков откликов: [bold]{stats['applications_total']}[/bold]")
+
+    if stats["by_status"]:
+        console.print("\n[bold]По статусам:[/bold]")
+        for key, value in stats["by_status"].items():
+            console.print(f"  {key}: {value}")
+
+    if stats["by_source"]:
+        console.print("\n[bold]По источникам:[/bold]")
+        for key, value in stats["by_source"].items():
+            console.print(f"  {key}: {value}")
+
+
+@app.command()
+def version() -> None:
+    console.print(f"Vacancy Agent v{__version__}")
+
+
+def _print_vacancies(vacancies) -> None:
+    table = Table(title=f"Вакансии ({len(vacancies)})")
+    table.add_column("ID", style="cyan")
+    table.add_column("Название", style="bold")
+    table.add_column("Компания", style="green")
+    table.add_column("Зарплата", style="yellow")
+    table.add_column("Локация")
+    table.add_column("Статус")
+
+    for vacancy in vacancies:
+        table.add_row(
+            vacancy.id[:8],
+            vacancy.title[:50],
+            vacancy.company[:30],
+            vacancy.salary or "—",
+            vacancy.location or "—",
+            vacancy.status.value,
+        )
+
+    console.print(table)
+
+
+if __name__ == "__main__":
+    app()

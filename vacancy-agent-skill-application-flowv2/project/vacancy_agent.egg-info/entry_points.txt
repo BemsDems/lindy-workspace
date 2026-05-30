@@ -1,0 +1,2 @@
+[console_scripts]
+vacancy-cli = vacancy_agent.cli:app

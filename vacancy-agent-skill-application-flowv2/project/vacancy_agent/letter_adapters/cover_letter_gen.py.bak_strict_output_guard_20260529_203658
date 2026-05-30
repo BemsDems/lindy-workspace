@@ -1,0 +1,180 @@
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+from vacancy_agent.letter_adapters.base import LetterAdapter, LetterGenerationResult
+from vacancy_agent.schemas import CandidateProfile, Vacancy
+
+
+class CoverLetterGenAdapter(LetterAdapter):
+    """Adapter for the separate `cover-letter-gen` skill.
+
+    Expected layout:
+
+        cover-letter-gen/
+          config/resume.yaml
+          config/settings.yaml
+          src/pipeline.py
+          src/profile_loader.py
+          src/llm_client.py
+
+    The adapter imports that skill in-process and calls its real 3-pass
+    pipeline: Analyze -> Write -> Validate -> Rewrite.
+    """
+
+    name = "cover_letter_gen"
+
+    def __init__(
+        self,
+        *,
+        skill_path: Path,
+        resume_path: Path | None = None,
+        settings_path: Path | None = None,
+        append_signature: bool = True,
+    ) -> None:
+        self.skill_path = skill_path.expanduser().resolve()
+        self.resume_path = (resume_path or self.skill_path / "config" / "resume.yaml").expanduser().resolve()
+        self.settings_path = (settings_path or self.skill_path / "config" / "settings.yaml").expanduser().resolve()
+        self.append_signature = append_signature
+
+    @property
+    def is_available(self) -> bool:
+        return (
+            self.skill_path.exists()
+            and (self.skill_path / "src" / "pipeline.py").exists()
+            and self.resume_path.exists()
+            and self.settings_path.exists()
+        )
+
+    async def generate(
+        self,
+        *,
+        vacancy: Vacancy,
+        candidate: CandidateProfile | None = None,  # candidate is owned by cover-letter-gen/resume.yaml
+    ) -> LetterGenerationResult:
+        if not self.is_available:
+            raise FileNotFoundError(
+                "cover-letter-gen is not available. Check COVER_LETTER_GEN_PATH, "
+                "COVER_LETTER_GEN_RESUME and COVER_LETTER_GEN_SETTINGS."
+            )
+
+        self._load_dotenv(self.skill_path / ".env")
+        self._ensure_import_path()
+
+        # Imports are intentionally lazy: the external skill is optional.
+        from src.llm_client import LLMClient, LLMConfig  # type: ignore
+        from src.models import Vacancy as GeneratorVacancy  # type: ignore
+        from src.pipeline import CoverLetterPipeline, PipelineConfig  # type: ignore
+        from src.profile_loader import load_profile  # type: ignore
+
+        settings_data = yaml.safe_load(self.settings_path.read_text(encoding="utf-8")) or {}
+        llm_cfg = LLMConfig.from_dict(settings_data.get("llm") or {})
+        if not getattr(llm_cfg, "api_key", None):
+            raise RuntimeError(
+                "LLM API key is not configured for cover-letter-gen. "
+                "Put it in cover-letter-gen/.env or config/settings.yaml."
+            )
+
+        pipeline_data = settings_data.get("pipeline") or {}
+        pipeline_cfg = PipelineConfig(
+            min_words=int(pipeline_data.get("min_words", 100)),
+            max_words=int(pipeline_data.get("max_words", 130)),
+            max_writer_retries=int(pipeline_data.get("max_writer_retries", 2)),
+            use_semantic_validator=bool(pipeline_data.get("use_semantic_validator", True)),
+            skip_deterministic_validation=bool(pipeline_data.get("skip_deterministic_validation", False)),
+            low_confidence_threshold=float(pipeline_data.get("low_confidence_threshold", 0.5)),
+            skip_below_confidence=float(pipeline_data.get("skip_below_confidence", 0.2)),
+            stage_timeout=float(pipeline_data.get("stage_timeout", 180.0)),
+            writer_temperature=float(pipeline_data.get("writer_temperature", 0.4)),
+            writer_max_tokens=int(pipeline_data.get("writer_max_tokens", 1024)),
+            writer_two_pass_editing=bool(pipeline_data.get("writer_two_pass_editing", False)),
+        )
+
+        profile = load_profile(self.resume_path)
+        gen_vacancy = GeneratorVacancy(
+            id=vacancy.id,
+            title=vacancy.title,
+            company=vacancy.company,
+            url=vacancy.url,
+            description=vacancy.description,
+            requirements=list(vacancy.requirements or []),
+            work_format=getattr(vacancy.work_format, "value", vacancy.work_format),
+            location=vacancy.location,
+            salary=vacancy.salary,
+            english_level=vacancy.english_level,
+            tags=list(vacancy.tags or []),
+        )
+
+        llm = LLMClient(config=llm_cfg)
+        try:
+            pipeline = CoverLetterPipeline(
+                llm,
+                profile,
+                config=pipeline_cfg,
+                forbidden_claims=settings_data.get("forbidden_claims"),
+            )
+            result = await pipeline.generate(gen_vacancy)
+        finally:
+            await llm.close()
+
+        letter = (result.letter or "").strip()
+        if letter and self.append_signature and profile.name:
+            # cover-letter-gen intentionally strips the signature from the LLM
+            # output; its CLI appends it afterwards. We keep the same behavior.
+            if not letter.lower().rstrip().endswith(profile.name.lower()):
+                letter = f"{letter}\n\nС уважением,\n{profile.name}"
+
+        generation_warning = None
+
+        if not result.passed:
+            generation_warning = result.error or "cover-letter-gen validation warning"
+
+        return LetterGenerationResult(
+            cover_letter=letter,
+            provider=self.name,
+            passed=bool(letter),
+            matched_requirements=list(result.used_tech or []),
+            missing_requirements=[],
+            risk_notes=[generation_warning] if generation_warning else [],
+            metadata={
+                "generator_passed": bool(result.passed),
+                "generator_vacancy_id": result.vacancy_id,
+                "company": result.company,
+                "title": result.title,
+                "confidence": result.confidence,
+                "confidence_reason": result.confidence_reason,
+                "selected_project": result.selected_project,
+                "used_numbers": result.used_numbers,
+                "used_tech": result.used_tech,
+                "universal_mode": result.universal_mode,
+                "semantic_validator_used": result.semantic_validator_used,
+                "word_count": result.word_count,
+                "attempts": result.attempts,
+                "violations": result.violations,
+                "error": result.error,
+                "resume_path": str(self.resume_path),
+                "settings_path": str(self.settings_path),
+            },
+            error=None if letter else result.error,
+        )
+
+    def _ensure_import_path(self) -> None:
+        path = str(self.skill_path)
+        if path not in sys.path:
+            sys.path.insert(0, path)
+
+    @staticmethod
+    def _load_dotenv(path: Path) -> None:
+        if not path.exists():
+            return
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
