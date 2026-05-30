@@ -1,5 +1,3 @@
-"""Pass 2: Analyzer JSON + CanonicalFacts -> letter text."""
-
 from __future__ import annotations
 import re
 
@@ -14,211 +12,235 @@ from .prompts.writer import build_writer_user, select_writer_system
 
 
 def _extend_selected_numbers_with_allowed_flutter_versions(
-selected_numbers: list,
-selected_achievements: list,
+    selected_numbers: list,
+    selected_achievements: list,
 ) -> list:
-"""Allow real Flutter migration versions when they are present in selected achievements."""
-result = [str(item) for item in (selected_numbers or [])]
-achievements_text = "
-".join(str(item) for item in (selected_achievements or []))
+    """Allow real Flutter migration versions when they are present in selected achievements."""
+    result = [str(item) for item in (selected_numbers or [])]
+    achievements_text = "\n".join(str(item) for item in (selected_achievements or []))
 
-for version in ("3.0.2", "3.29.0"):
-    if version in achievements_text and version not in result:
-        result.append(version)
+    for version in ("3.0.2", "3.29.0"):
+        if version in achievements_text and version not in result:
+            result.append(version)
 
-return result
+    return result
 
 
 def _restrict_allowed_tech_for_letter(
-*,
-global_allowed_tech: list,
-selected_project_tech: list,
-selected_achievements: list,
+    *,
+    global_allowed_tech: list,
+    selected_project_tech: list,
+    selected_achievements: list,
 ) -> list:
-"""Use only evidence-level tech for this letter, not the whole resume stack."""
-achievements_text = "
-".join(str(item).lower() for item in (selected_achievements or []))
-allowed: list[str] = []
+    """Use only evidence-level tech for this letter, not the whole resume stack."""
+    achievements_text = "\n".join(str(item).lower() for item in (selected_achievements or []))
+    allowed: list[str] = []
 
-def add(value: object) -> None:
-    item = str(value).strip()
-    if item and item not in allowed:
-        allowed.append(item)
+    def add(value: object) -> None:
+        item = str(value).strip()
+        if item and item not in allowed:
+            allowed.append(item)
 
-# Always safe for this generator.
-for tech in ("Flutter", "Dart"):
-    add(tech)
+    # Always safe for this generator.
+    for tech in ("Flutter", "Dart"):
+        add(tech)
 
-# Add technology only if it appears in selected achievements.
-for tech in list(selected_project_tech or []) + list(global_allowed_tech or []):
-    tech_text = str(tech).strip()
-    if not tech_text:
-        continue
+    # Add technology only if it appears in selected achievements.
+    for tech in list(selected_project_tech or []) + list(global_allowed_tech or []):
+        tech_text = str(tech).strip()
+        if not tech_text:
+            continue
 
-    tech_lower = tech_text.lower()
+        tech_lower = tech_text.lower()
 
-    if tech_lower in achievements_text:
-        add(tech_text)
+        if tech_lower in achievements_text:
+            add(tech_text)
 
-return sorted(allowed, key=lambda item: item.lower())
+    return sorted(allowed, key=lambda item: item.lower())
+
 
 def build_canonical_facts_brief(
-facts: CanonicalFacts, selected_project: str
+    facts: CanonicalFacts, selected_project: str
 ) -> Dict[str, Any]:
-"""Compact dict of facts handed to the Writer - only what's needed."""
-proj = facts.project(selected_project)
-return {
-    "candidate_name": facts.candidate_name,
-    "selected_project_name": proj.name if proj else selected_project,
-    "selected_project_company": proj.company if proj else "",
-    "selected_project_industry": proj.industry if proj else "",
-    "selected_project_description": proj.description if proj else "",
-    "selected_project_tech": list(proj.tech_stack) if proj else [],
-    "allowed_tech": sorted(facts.allowed_tech),
-}
+    """Compact dict of facts handed to the Writer - only what's needed."""
+    proj = facts.project(selected_project)
+    return {
+        "candidate_name": facts.candidate_name,
+        "selected_project_name": proj.name if proj else selected_project,
+        "selected_project_company": proj.company if proj else "",
+        "selected_project_industry": proj.industry if proj else "",
+        "selected_project_description": proj.description if proj else "",
+        "selected_project_tech": list(proj.tech_stack) if proj else [],
+        "allowed_tech": sorted(facts.allowed_tech),
+    }
 
 
 def _normalize_metric(value: object) -> str:
-text = str(value).lower().replace(",", ".")
-text = re.sub(r"\s+", "", text)
-return text
+    text = str(value).lower().replace(",", ".")
+    text = re.sub(r"\s+", "", text)
+    return text
 
 
 def _allowed_metric_tokens(analyzer_json: Dict[str, Any]) -> set[str]:
-selected_numbers = analyzer_json.get("selected_numbers") or []
-tokens: set[str] = set()
+    selected_numbers = analyzer_json.get("selected_numbers") or []
+    tokens: set[str] = set()
 
-for item in selected_numbers:
-    item_text = str(item)
+    for item in selected_numbers:
+        item_text = str(item)
 
-    for number in re.findall(r"\d+(?:[.,]\d+)?\s*(?:%|\+|млн|тыс|тысяч)?", item_text.lower()):
-        tokens.add(_normalize_metric(number))
+        for number in re.findall(r"\d+(?:[.,]\d+)?\s*(?:%|\+|млн|тыс|тысяч)?", item_text.lower()):
+            tokens.add(_normalize_metric(number))
 
-tokens.add("3")
-tokens.add("3+")
+    tokens.add("3")
+    tokens.add("3+")
 
-return tokens
+    return tokens
 
 
 def _remove_unapproved_metric_sentences(text: str, analyzer_json: Dict[str, Any]) -> str:
-allowed = _allowed_metric_tokens(analyzer_json)
-paragraphs = text.split("
+    allowed = _allowed_metric_tokens(analyzer_json)
+    paragraphs = text.split("\n\n")
+    cleaned_paragraphs: list[str] = []
 
-")
-cleaned_paragraphs: list[str] = []
+    for paragraph in paragraphs:
+        sentences = re.split(r"(?<=[.!?])\s+", paragraph.strip())
+        cleaned_sentences: list[str] = []
 
-for paragraph in paragraphs:
-    sentences = re.split(r"(?<=[.!?])\s+", paragraph.strip())
-    cleaned_sentences: list[str] = []
+        for sentence in sentences:
+            numbers = re.findall(r"\d+(?:[.,]\d+)?\s*(?:%|\+|млн|тыс|тысяч)?", sentence.lower())
 
-    for sentence in sentences:
-        numbers = re.findall(r"\d+(?:[.,]\d+)?\s*(?:%|\+|млн|тыс|тысяч)?", sentence.lower())
+            if not numbers:
+                cleaned_sentences.append(sentence)
+                continue
 
-        if not numbers:
-            cleaned_sentences.append(sentence)
-            continue
+            if "3+ года" in sentence or "3 года" in sentence:
+                cleaned_sentences.append(sentence)
+                continue
 
-        if "3+ года" in sentence or "3 года" in sentence:
-            cleaned_sentences.append(sentence)
-            continue
+            normalized_numbers = {_normalize_metric(number) for number in numbers}
 
-        normalized_numbers = {_normalize_metric(number) for number in numbers}
+            if normalized_numbers.issubset(allowed):
+                cleaned_sentences.append(sentence)
 
-        if normalized_numbers.issubset(allowed):
-            cleaned_sentences.append(sentence)
+        cleaned_paragraph = " ".join(item for item in cleaned_sentences if item).strip()
 
-    cleaned_paragraph = " ".join(item for item in cleaned_sentences if item).strip()
+        if cleaned_paragraph:
+            cleaned_paragraphs.append(cleaned_paragraph)
 
-    if cleaned_paragraph:
-        cleaned_paragraphs.append(cleaned_paragraph)
-
-return "
-
-".join(cleaned_paragraphs).strip()
+    return "\n\n".join(cleaned_paragraphs).strip()
 
 
 def _enforce_paragraph_split(text: str, *, universal_mode: bool) -> str:
-"""Force at least 2 paragraphs for STANDARD mode if the model returned a single block.
+    """Force at least 2 paragraphs for STANDARD mode if the model returned a single block.
 
-Heuristic: if STANDARD mode and the letter is one block of 3+ sentences,
-split at the boundary closest to the middle (between sentences).
-UNIVERSAL mode keeps a single paragraph.
-"""
-cleaned = (text or "").strip()
-if not cleaned or universal_mode:
-    return cleaned
+    Heuristic: if STANDARD mode and the letter is one block of 3+ sentences,
+    split at the boundary closest to the middle (between sentences).
+    UNIVERSAL mode keeps a single paragraph.
+    """
+    cleaned = (text or "").strip()
+    if not cleaned or universal_mode:
+        return cleaned
 
-# Already has paragraph breaks - trust the model.
-if "
+    # Already has paragraph breaks - trust the model.
+    if "\n\n" in cleaned:
+        return cleaned
 
-" in cleaned:
-    return cleaned
+    # Split into sentences (keep delimiters).
+    sentences = re.split(r"(?<=[.!?])\s+", cleaned)
+    sentences = [s.strip() for s in sentences if s.strip()]
 
-# Split into sentences (keep delimiters).
-sentences = re.split(r"(?<=[.!?])\s+", cleaned)
-sentences = [s.strip() for s in sentences if s.strip()]
+    if len(sentences) < 3:
+        return cleaned
 
-if len(sentences) < 3:
-    return cleaned
+    # Find split point closest to the middle.
+    mid = len(sentences) // 2
+    first = " ".join(sentences[:mid]).strip()
+    second = " ".join(sentences[mid:]).strip()
 
-# Find split point closest to the middle.
-mid = len(sentences) // 2
-first = " ".join(sentences[:mid]).strip()
-second = " ".join(sentences[mid:]).strip()
+    if not first or not second:
+        return cleaned
 
-if not first or not second:
-    return cleaned
-
-return f"{first}
-
-{second}"
+    return f"{first}\n\n{second}"
 
 
 def _build_greeting(vacancy_company: str) -> str:
-"""Build the exact greeting line the model must use."""
-company = (vacancy_company or "").strip()
-if company:
-    return f"Здравствуйте, {company}!"
-return "Здравствуйте!"
+    """Build the exact greeting line the model must use."""
+    company = (vacancy_company or "").strip()
+    if company:
+        return f"Здравствуйте, {company}!"
+    return "Здравствуйте!"
+
+
+def _inject_greeting(text: str, greeting: str) -> str:
+    """Ensure the letter starts with exactly the greeting line.
+
+    If the model already produced the correct greeting as the first line,
+    leave the text untouched. Otherwise prepend the greeting followed by
+    a blank line, stripping any wrong greeting the model may have written.
+    """
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return greeting
+
+    lines = cleaned.splitlines()
+
+    # Check if first non-empty line is already the correct greeting.
+    first_line = lines[0].strip() if lines else ""
+    if first_line == greeting:
+        return cleaned
+
+    # Strip a wrong greeting line if the model wrote one (starts with "Здравствуйте").
+    if first_line.startswith("Здравствуйте"):
+        # Remove the first line and any immediately following blank line.
+        rest_lines = lines[1:]
+        while rest_lines and not rest_lines[0].strip():
+            rest_lines.pop(0)
+        cleaned = "\n".join(rest_lines).strip()
+
+    return f"{greeting}\n\n{cleaned}"
 
 
 async def write_letter(
-llm: LLMClient,
-analyzer_json: Dict[str, Any],
-facts: CanonicalFacts,
-*,
-used_starts: Optional[List[str]] = None,
-feedback: Optional[str] = None,
-universal_mode: bool = False,
-temperature: float = 0.4,
-max_tokens: int = 400,
-two_pass_editing: bool = False,
-vacancy_title: str = "",
-vacancy_company: str = "",
-vacancy_description: str = "",
-vacancy_requirements: Optional[List[str]] = None,
+    llm: LLMClient,
+    analyzer_json: Dict[str, Any],
+    facts: CanonicalFacts,
+    *,
+    used_starts: Optional[List[str]] = None,
+    feedback: Optional[str] = None,
+    universal_mode: bool = False,
+    temperature: float = 0.4,
+    max_tokens: int = 400,
+    two_pass_editing: bool = False,
+    vacancy_title: str = "",
+    vacancy_company: str = "",
+    vacancy_description: str = "",
+    vacancy_requirements: Optional[List[str]] = None,
 ) -> str:
-system_prompt = select_writer_system(universal_mode=universal_mode)
-selected_project = str(analyzer_json.get("selected_project") or "")
-brief = build_canonical_facts_brief(facts, selected_project)
-opener_pool = select_openers(facts.experience_years, used_starts or [], n=2)
+    system_prompt = select_writer_system(universal_mode=universal_mode)
+    selected_project = str(analyzer_json.get("selected_project") or "")
+    brief = build_canonical_facts_brief(facts, selected_project)
+    opener_pool = select_openers(facts.experience_years, used_starts or [], n=2)
 
-# Generate the final letter FROM FACTS ONLY.
-final_text = await _final_letter_from_facts(
-    llm,
-    analyzer_json=analyzer_json,
-    canonical_facts_brief=brief,
-    opener_pool=opener_pool,
-    universal_mode=universal_mode,
-    feedback=feedback,
-    max_tokens=max_tokens,
-    vacancy_title=vacancy_title,
-    vacancy_company=vacancy_company,
-    vacancy_description=vacancy_description,
-    vacancy_requirements=vacancy_requirements or [],
-)
-stripped = _strip_signature_lines(final_text)
-return _enforce_paragraph_split(stripped, universal_mode=universal_mode)
+    # Generate the final letter FROM FACTS ONLY.
+    final_text = await _final_letter_from_facts(
+        llm,
+        analyzer_json=analyzer_json,
+        canonical_facts_brief=brief,
+        opener_pool=opener_pool,
+        universal_mode=universal_mode,
+        feedback=feedback,
+        max_tokens=max_tokens,
+        vacancy_title=vacancy_title,
+        vacancy_company=vacancy_company,
+        vacancy_description=vacancy_description,
+        vacancy_requirements=vacancy_requirements or [],
+    )
+    stripped = _strip_signature_lines(final_text)
+    split = _enforce_paragraph_split(stripped, universal_mode=universal_mode)
+
+    # Python-level guarantee: greeting is always the first line.
+    greeting = _build_greeting(vacancy_company)
+    return _inject_greeting(split, greeting)
 
 
 CLEANER_SYSTEM = """\
@@ -249,18 +271,13 @@ CLEANER_SYSTEM = """\
 
 
 def _cleaner_user(draft: str, *, universal_mode: bool) -> str:
-mode = "1-2 плотных абзаца" if universal_mode else "2-3 абзаца, разделённых пустой строкой"
-return (
-    f"Режим: {mode}.
-"
-    "Перепиши черновик в чистое сопроводительное письмо по режиму выше.
-
-"
-    "ЧЕРНОВИК:
-"
-    f"{draft.strip()}
-"
-)
+    mode = "1-2 плотных абзаца" if universal_mode else "2-3 абзаца, разделённых пустой строкой"
+    return (
+        f"Режим: {mode}.\n"
+        "Перепиши черновик в чистое сопроводительное письмо по режиму выше.\n\n"
+        "ЧЕРНОВИК:\n"
+        f"{draft.strip()}\n"
+    )
 
 
 FINALIZER_SYSTEM = """Ты пишешь сопроводительное письмо от имени Flutter-разработчика для российского рынка (HH.ru, корпоративная почта, Telegram).
@@ -290,9 +307,7 @@ B. ЗАПРЕЩЁННЫЕ ФИНАЛЫ - ни одна из этих фраз н
 - «Буду полезен...»
 ВМЕСТО них - конкретный, живой финал (примеры в секции ЖИВЫЕ ФИНАЛЫ ниже).
 
-C. ВТОРОЙ АБЗАЦ ОБЯЗАТЕЛЕН (только для STANDARD режима). Между первым и вторым абзацем - ровно одна пустая строка (\
-\
-). Не 1 абзац, не 3.
+C. ВТОРОЙ АБЗАЦ ОБЯЗАТЕЛЕН (только для STANDARD режима). Между первым и вторым абзацем - ровно одна пустая строка (\n\n). Не 1 абзац, не 3.
 
 D. ПОДПИСЬ НЕ ДОБАВЛЯЙ - её добавит постпроцесс.
 
@@ -350,189 +365,180 @@ UNIVERSAL режим: 1 плотный абзац 60-90 слов, без агр�
 
 
 def _finalizer_user(
-*,
-universal_mode: bool,
-selected_project: str,
-project_company: str,
-project_industry: str,
-project_description: str,
-hook_phrase: str,
-selected_numbers: List[str],
-selected_achievements: List[str],
-allowed_tech: List[str],
-openers: List[str],
-feedback: Optional[str] = None,
-vacancy_title: str = "",
-vacancy_company: str = "",
-vacancy_description: str = "",
-vacancy_requirements: Optional[List[str]] = None,
+    *,
+    universal_mode: bool,
+    selected_project: str,
+    project_company: str,
+    project_industry: str,
+    project_description: str,
+    hook_phrase: str,
+    selected_numbers: List[str],
+    selected_achievements: List[str],
+    allowed_tech: List[str],
+    openers: List[str],
+    feedback: Optional[str] = None,
+    vacancy_title: str = "",
+    vacancy_company: str = "",
+    vacancy_description: str = "",
+    vacancy_requirements: Optional[List[str]] = None,
 ) -> str:
-mode = (
-    "UNIVERSAL: 1 плотный абзац, 60-90 слов"
-    if universal_mode
-    else "STANDARD: РОВНО 2 абзаца через \
-\
-, 70-110 слов суммарно"
-)
+    mode = (
+        "UNIVERSAL: 1 плотный абзац, 60-90 слов"
+        if universal_mode
+        else "STANDARD: РОВНО 2 абзаца через \n\n, 70-110 слов суммарно"
+    )
 
-greeting = _build_greeting(vacancy_company)
+    greeting = _build_greeting(vacancy_company)
 
-parts: List[str] = [
-    f"MODE: {mode}",
-    "",
-    "=== GREETING (ПЕРВАЯ СТРОКА ПИСЬМА = РОВНО ЭТА СТРОКА, ПОТОМ ПУСТАЯ СТРОКА) ===",
-    greeting,
-    "",
-    "=== VACANCY_CONTEXT (КУДА ПИШЕМ) ===",
-    f"VACANCY_TITLE: {vacancy_title or '(не передан)'}",
-    f"VACANCY_COMPANY: {vacancy_company or '(не передан)'}",
-]
+    parts: List[str] = [
+        f"MODE: {mode}",
+        "",
+        "=== GREETING (ПЕРВАЯ СТРОКА ПИСЬМА = РОВНО ЭТА СТРОКА, ПОТОМ ПУСТАЯ СТРОКА) ===",
+        greeting,
+        "",
+        "=== VACANCY_CONTEXT (КУДА ПИШЕМ) ===",
+        f"VACANCY_TITLE: {vacancy_title or '(не передан)'}",
+        f"VACANCY_COMPANY: {vacancy_company or '(не передан)'}",
+    ]
 
-if vacancy_description:
-    desc_trimmed = vacancy_description.strip()
-    if len(desc_trimmed) > 1200:
-        desc_trimmed = desc_trimmed[:1200].rstrip() + "..."
-    parts.append(f"VACANCY_DESCRIPTION: {desc_trimmed}")
+    if vacancy_description:
+        desc_trimmed = vacancy_description.strip()
+        if len(desc_trimmed) > 1200:
+            desc_trimmed = desc_trimmed[:1200].rstrip() + "..."
+        parts.append(f"VACANCY_DESCRIPTION: {desc_trimmed}")
 
-if vacancy_requirements:
-    parts.append("VACANCY_REQUIREMENTS:")
-    for req in list(vacancy_requirements)[:15]:
-        req_text = str(req).strip()
-        if req_text:
-            parts.append(f"- {req_text}")
+    if vacancy_requirements:
+        parts.append("VACANCY_REQUIREMENTS:")
+        for req in list(vacancy_requirements)[:15]:
+            req_text = str(req).strip()
+            if req_text:
+                parts.append(f"- {req_text}")
 
-parts.extend([
-    "",
-    "=== HOOK (ГЛАВНОЕ ТРЕБОВАНИЕ, на которое надо ответить) ===",
-    f"HOOK: {hook_phrase or '(не передан - привяжи к VACANCY_TITLE и описанию)'}",
-    "",
-    "=== ВЫБРАННЫЙ ПРОЕКТ КАНДИДАТА ===",
-    "PROJECT: выбранный проект из резюме, название проекта не использовать в письме",
-    "PROJECT_FACTS:",
-    "- company: прошлую компанию не указывать в письме",
-    f"- industry: {project_industry}",
-    f"- description: {project_description}",
-    "",
-    f"SELECTED_NUMBERS: {json.dumps(selected_numbers, ensure_ascii=False)}",
-    "ACHIEVEMENTS (разрешённые факты):",
-])
-for a in selected_achievements:
-    parts.append(f"- {a}")
+    parts.extend([
+        "",
+        "=== HOOK (ГЛАВНОЕ ТРЕБОВАНИЕ, на которое надо ответить) ===",
+        f"HOOK: {hook_phrase or '(не передан - привяжи к VACANCY_TITLE и описанию)'}",
+        "",
+        "=== ВЫБРАННЫЙ ПРОЕКТ КАНДИДАТА ===",
+        "PROJECT: выбранный проект из резюме, название проекта не использовать в письме",
+        "PROJECT_FACTS:",
+        "- company: прошлую компанию не указывать в письме",
+        f"- industry: {project_industry}",
+        f"- description: {project_description}",
+        "",
+        f"SELECTED_NUMBERS: {json.dumps(selected_numbers, ensure_ascii=False)}",
+        "ACHIEVEMENTS (разрешённые факты):",
+    ])
+    for a in selected_achievements:
+        parts.append(f"- {a}")
 
-parts.append("")
-parts.append("ALLOWED_TECH (используй только эти термины):")
-for t in allowed_tech[:80]:
-    parts.append(f"- {t}")
-
-parts.append("")
-parts.append("OPENERS (используй как смысл для первой содержательной фразы ПОСЛЕ GREETING, но НЕ выноси отдельной строкой):")
-for o in openers:
-    parts.append(f"- {o}")
-
-if feedback:
     parts.append("")
-    parts.append("FEEDBACK ОТ ВАЛИДАТОРА:")
-    parts.append(feedback)
-    parts.append("Исправь это, но не упоминай feedback в письме.")
+    parts.append("ALLOWED_TECH (используй только эти термины):")
+    for t in allowed_tech[:80]:
+        parts.append(f"- {t}")
 
-parts.append("")
-parts.append("=== ЗАДАЧА ===")
-if not universal_mode:
-    parts.append(
-        "Напиши письмо по MODE.
-"
-        "СТРУКТУРА: первая строка = GREETING слово в слово. Затем пустая строка. Затем абзац 1 (3-4 предложения, привязка к VACANCY_CONTEXT + 1-2 факта из ACHIEVEMENTS с числами). Затем пустая строка. Затем абзац 2 (2-3 предложения: связка с компанией/доменом из VACANCY_CONTEXT + живой финал).
-"
-        "ФИНАЛ: НЕ используй фразы из секции ЗАПРЕЩЁННЫЕ ФИНАЛЫ. Сформулируй живой финал сам - предложение созвона, доступность по времени, готовность показать архитектуру.
-"
-        "Верни только письмо, без комментариев."
-    )
-else:
-    parts.append(
-        "Напиши письмо по MODE.
-"
-        "СТРУКТУРА: первая строка = GREETING слово в слово. Затем пустая строка. Затем 1 плотный абзац.
-"
-        "ФИНАЛ: НЕ используй фразы из секции ЗАПРЕЩЁННЫЕ ФИНАЛЫ.
-"
-        "Верни только письмо, без комментариев."
-    )
-return "
-".join(parts)
+    parts.append("")
+    parts.append("OPENERS (используй как смысл для первой содержательной фразы ПОСЛЕ GREETING, но НЕ выноси отдельной строкой):")
+    for o in openers:
+        parts.append(f"- {o}")
+
+    if feedback:
+        parts.append("")
+        parts.append("FEEDBACK ОТ ВАЛИДАТОРА:")
+        parts.append(feedback)
+        parts.append("Исправь это, но не упоминай feedback в письме.")
+
+    parts.append("")
+    parts.append("=== ЗАДАЧА ===")
+    if not universal_mode:
+        parts.append(
+            "Напиши письмо по MODE.\n"
+            "СТРУКТУРА: первая строка = GREETING слово в слово. Затем пустая строка. Затем абзац 1 (3-4 предложения, привязка к VACANCY_CONTEXT + 1-2 факта из ACHIEVEMENTS с числами). Затем пустая строка. Затем абзац 2 (2-3 предложения: связка с компанией/доменом из VACANCY_CONTEXT + живой финал).\n"
+            "ФИНАЛ: НЕ используй фразы из секции ЗАПРЕЩЁННЫЕ ФИНАЛЫ. Сформулируй живой финал сам - предложение созвона, доступность по времени, готовность показать архитектуру.\n"
+            "Верни только письмо, без комментариев."
+        )
+    else:
+        parts.append(
+            "Напиши письмо по MODE.\n"
+            "СТРУКТУРА: первая строка = GREETING слово в слово. Затем пустая строка. Затем 1 плотный абзац.\n"
+            "ФИНАЛ: НЕ используй фразы из секции ЗАПРЕЩЁННЫЕ ФИНАЛЫ.\n"
+            "Верни только письмо, без комментариев."
+        )
+    return "\n".join(parts)
 
 
 async def _final_letter_from_facts(
-llm: LLMClient,
-*,
-analyzer_json: Dict[str, Any],
-canonical_facts_brief: Dict[str, Any],
-opener_pool: List[str],
-universal_mode: bool,
-feedback: Optional[str] = None,
-max_tokens: int = 400,
-vacancy_title: str = "",
-vacancy_company: str = "",
-vacancy_description: str = "",
-vacancy_requirements: Optional[List[str]] = None,
+    llm: LLMClient,
+    *,
+    analyzer_json: Dict[str, Any],
+    canonical_facts_brief: Dict[str, Any],
+    opener_pool: List[str],
+    universal_mode: bool,
+    feedback: Optional[str] = None,
+    max_tokens: int = 400,
+    vacancy_title: str = "",
+    vacancy_company: str = "",
+    vacancy_description: str = "",
+    vacancy_requirements: Optional[List[str]] = None,
 ) -> str:
-selected_project = str(analyzer_json.get("selected_project") or "")
-hook_phrase = str(analyzer_json.get("hook_phrase") or "")
-project_company = str(canonical_facts_brief.get("selected_project_company") or "")
-project_industry = str(canonical_facts_brief.get("selected_project_industry") or "")
-project_description = str(canonical_facts_brief.get("selected_project_description") or "")
-selected_achievements = list(analyzer_json.get("selected_achievements") or [])
-selected_numbers = _extend_selected_numbers_with_allowed_flutter_versions(
-    list(analyzer_json.get("selected_numbers") or []),
-    selected_achievements,
-)
-selected_project_tech = list((canonical_facts_brief or {}).get("selected_project_tech") or [])
-global_allowed_tech = list((canonical_facts_brief or {}).get("allowed_tech") or [])
-allowed_tech = _restrict_allowed_tech_for_letter(
-    global_allowed_tech=global_allowed_tech,
-    selected_project_tech=selected_project_tech,
-    selected_achievements=selected_achievements,
-)
-
-return await llm.generate(
-    system_prompt=FINALIZER_SYSTEM,
-    user_prompt=_finalizer_user(
-        universal_mode=universal_mode,
-        selected_project=selected_project,
-        project_company=project_company,
-        project_industry=project_industry,
-        project_description=project_description,
-        hook_phrase=hook_phrase,
-        selected_numbers=selected_numbers,
+    selected_project = str(analyzer_json.get("selected_project") or "")
+    hook_phrase = str(analyzer_json.get("hook_phrase") or "")
+    project_company = str(canonical_facts_brief.get("selected_project_company") or "")
+    project_industry = str(canonical_facts_brief.get("selected_project_industry") or "")
+    project_description = str(canonical_facts_brief.get("selected_project_description") or "")
+    selected_achievements = list(analyzer_json.get("selected_achievements") or [])
+    selected_numbers = _extend_selected_numbers_with_allowed_flutter_versions(
+        list(analyzer_json.get("selected_numbers") or []),
+        selected_achievements,
+    )
+    selected_project_tech = list((canonical_facts_brief or {}).get("selected_project_tech") or [])
+    global_allowed_tech = list((canonical_facts_brief or {}).get("allowed_tech") or [])
+    allowed_tech = _restrict_allowed_tech_for_letter(
+        global_allowed_tech=global_allowed_tech,
+        selected_project_tech=selected_project_tech,
         selected_achievements=selected_achievements,
-        allowed_tech=allowed_tech,
-        openers=list(opener_pool),
-        feedback=feedback,
-        vacancy_title=vacancy_title,
-        vacancy_company=vacancy_company,
-        vacancy_description=vacancy_description,
-        vacancy_requirements=vacancy_requirements or [],
-    ),
-    temperature=0.25,
-    max_tokens=max_tokens,
-    json_mode=False,
-)
+    )
+
+    return await llm.generate(
+        system_prompt=FINALIZER_SYSTEM,
+        user_prompt=_finalizer_user(
+            universal_mode=universal_mode,
+            selected_project=selected_project,
+            project_company=project_company,
+            project_industry=project_industry,
+            project_description=project_description,
+            hook_phrase=hook_phrase,
+            selected_numbers=selected_numbers,
+            selected_achievements=selected_achievements,
+            allowed_tech=allowed_tech,
+            openers=list(opener_pool),
+            feedback=feedback,
+            vacancy_title=vacancy_title,
+            vacancy_company=vacancy_company,
+            vacancy_description=vacancy_description,
+            vacancy_requirements=vacancy_requirements or [],
+        ),
+        temperature=0.25,
+        max_tokens=max_tokens,
+        json_mode=False,
+    )
 
 
 async def repair_letter_after_validation(
-llm: LLMClient,
-*,
-letter: str,
-validation_feedback: str,
-analyzer_json: Dict[str, Any],
-canonical_facts_brief: Dict[str, Any],
-max_tokens: int = 700,
+    llm: LLMClient,
+    *,
+    letter: str,
+    validation_feedback: str,
+    analyzer_json: Dict[str, Any],
+    canonical_facts_brief: Dict[str, Any],
+    max_tokens: int = 700,
 ) -> str:
-selected_project = str(analyzer_json.get("selected_project") or "")
-selected_achievements = list(analyzer_json.get("selected_achievements") or [])
-selected_numbers = list(analyzer_json.get("selected_numbers") or [])
-allowed_tech = list(canonical_facts_brief.get("allowed_tech") or [])
+    selected_project = str(analyzer_json.get("selected_project") or "")
+    selected_achievements = list(analyzer_json.get("selected_achievements") or [])
+    selected_numbers = list(analyzer_json.get("selected_numbers") or [])
+    allowed_tech = list(canonical_facts_brief.get("allowed_tech") or [])
 
-system_prompt = """\
+    system_prompt = """\
 Ты редактор сопроводительных писем.
 
 Твоя задача - исправить готовое письмо по замечаниям валидатора.
@@ -550,11 +556,11 @@ system_prompt = """\
 - Не заканчивай письмо шаблонными фразами: "Этот опыт поможет...", "Этот опыт может быть полезен...", "Смогу быстро включиться...", "Буду полезен...", "Готов обсудить задачи и подробнее рассказать о релевантном опыте на собеседовании.", "Буду рад обсудить.", "Хотел бы...".
 - Финальное предложение должно быть живым и конкретным: предложение созвона, доступности по времени или показа архитектуры проекта. НЕ используй ни одну заранее заготовленную фразу - формулируй финал под контекст вакансии и проекта.
 - Не присваивай кандидату технологии из вакансии, если их нет в selected_achievements, allowed_tech или evidence.
-- Запрещено добавлять как опыт кандидата: video player, DRM, ExoPlayer, HLS, DASH, offline cache, WebSocket, Firestore, Amplitude, AppsFlyer.
+- Запрещено добавлять как опыт кандидата: video player, DRM, ExoPlayer, HLS, DASH, offline cache, WebSocket, Firestore, Amplitude, AppsFlyer, FFI, Kotlin, Swift, platform channels, MethodChannel, EventChannel.
 - Если validation_feedback просит добавить технологию из вакансии, но её нет в evidence, игнорируй такой fix_hint.
 """
 
-user_prompt = f"""\
+    user_prompt = f"""\
 ИСХОДНОЕ ПИСЬМО:
 {letter.strip()}
 
@@ -566,68 +572,54 @@ SELECTED_PROJECT:
 
 ALLOWED_ACHIEVEMENTS:
 """
-for a in selected_achievements:
-    user_prompt += f"- {a}
-"
+    for a in selected_achievements:
+        user_prompt += f"- {a}\n"
 
-user_prompt += f"""\
+    user_prompt += f"""\
 ALLOWED_NUMBERS:
 """
-for n in selected_numbers:
-    user_prompt += f"- {n}
-"
+    for n in selected_numbers:
+        user_prompt += f"- {n}\n"
 
-user_prompt += "ALLOWED_TECH:
-"
-for tech in allowed_tech[:30]:
-    user_prompt += f"- {tech}
-"
+    user_prompt += "ALLOWED_TECH:\n"
+    for tech in allowed_tech[:30]:
+        user_prompt += f"- {tech}\n"
 
-user_prompt += (
-    "
-"
-    "ОБЯЗАТЕЛЬНЫЕ ОГРАНИЧЕНИЯ ПРИ ИСПРАВЛЕНИИ:
-"
-    "- Не заканчивай письмо шаблонными фразами: «Этот опыт поможет», «Этот опыт может быть полезен», «Смогу быстро включиться», «Буду полезен», «Готов обсудить задачи и подробнее рассказать о релевантном опыте на собеседовании», «Буду рад обсудить», «Хотел бы».
-"
-    "- Финальное предложение должно быть живым и конкретным под контекст вакансии: предложение короткого созвона, указание доступности по времени или предложение показать архитектуру проекта. Сформулируй его сам - не используй заготовленные фразы.
-"
-    "- Если в ИСХОДНОМ ПИСЬМЕ уже есть живой, не шаблонный финал - сохрани его без изменений.
-"
-    "- Не добавляй как опыт кандидата: video player, DRM, ExoPlayer, HLS, DASH, offline cache, WebSocket, Firestore, Amplitude, AppsFlyer, если этого нет в ALLOWED_ACHIEVEMENTS или ALLOWED_TECH.
-"
-    "- Если VALIDATION_FEEDBACK просит добавить неподтверждённую технологию из вакансии, игнорируй эту часть feedback.
-"
-    "
-"
-    "Исправь письмо минимально. Верни только финальный текст.
-"
-)
+    user_prompt += (
+        "\n"
+        "ОБЯЗАТЕЛЬНЫЕ ОГРАНИЧЕНИЯ ПРИ ИСПРАВЛЕНИИ:\n"
+        "- Не заканчивай письмо шаблонными фразами: «Этот опыт поможет», «Этот опыт может быть полезен», «Смогу быстро включиться», «Буду полезен», «Готов обсудить задачи и подробнее рассказать о релевантном опыте на собеседовании», «Буду рад обсудить», «Хотел бы».\n"
+        "- Финальное предложение должно быть живым и конкретным под контекст вакансии: предложение короткого созвона, указание доступности по времени или предложение показать архитектуру проекта. Сформулируй его сам - не используй заготовленные фразы.\n"
+        "- Если в ИСХОДНОМ ПИСЬМЕ уже есть живой, не шаблонный финал - сохрани его без изменений.\n"
+        "- Не добавляй как опыт кандидата: video player, DRM, ExoPlayer, HLS, DASH, offline cache, WebSocket, Firestore, Amplitude, AppsFlyer, FFI, Kotlin, Swift, platform channels, MethodChannel, EventChannel, если этого нет в ALLOWED_ACHIEVEMENTS или ALLOWED_TECH.\n"
+        "- Если VALIDATION_FEEDBACK просит добавить неподтверждённую технологию из вакансии, игнорируй эту часть feedback.\n"
+        "\n"
+        "Исправь письмо минимально. Верни только финальный текст.\n"
+    )
 
-return await llm.generate(
-    system_prompt=system_prompt,
-    user_prompt=user_prompt,
-    temperature=0.15,
-    max_tokens=max_tokens,
-    json_mode=False,
-)
+    return await llm.generate(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        temperature=0.15,
+        max_tokens=max_tokens,
+        json_mode=False,
+    )
 
 
 def _strip_signature_lines(text: str) -> str:
-"""Remove a trailing 'С уважением, ...
-<name>' block if the model added one."""
-lines = text.splitlines()
-while lines and not lines[-1].strip():
-    lines.pop()
+    """Remove a trailing 'С уважением, ...
+    <name>' block if the model added one."""
+    lines = text.splitlines()
+    while lines and not lines[-1].strip():
+        lines.pop()
 
-for idx in range(len(lines) - 1, -1, -1):
-    stripped = lines[idx].strip().lower()
-    if stripped.startswith("с уважением"):
-        lines = lines[:idx]
-        break
+    for idx in range(len(lines) - 1, -1, -1):
+        stripped = lines[idx].strip().lower()
+        if stripped.startswith("с уважением"):
+            lines = lines[:idx]
+            break
 
-while lines and not lines[-1].strip():
-    lines.pop()
+    while lines and not lines[-1].strip():
+        lines.pop()
 
-return "
-".join(lines).strip()
+    return "\n".join(lines).strip()
