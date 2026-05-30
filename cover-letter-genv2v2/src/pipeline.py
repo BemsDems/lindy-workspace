@@ -10,8 +10,11 @@ used_numbers, used_tech, attempts, semantic_validator_used).
 v3 changes:
 - repair_on_validation_failed=True now actually calls repair_letter_after_validation()
 instead of falling through to a full write_letter() retry.
-- ProjectSelector is instantiated per-pipeline (no module-level singleton),
-preventing _recent_picks state leaks between independent pipeline instances.
+- ProjectSelector module-level singleton has been removed to prevent
+_recent_picks state leaks. Currently the pipeline relies on the Analyzer's
+LLM-based project selection; if deterministic ProjectSelector override
+is reintroduced, it should be instantiated per-pipeline and merged with
+the analyzer output explicitly.
 """
 
 from __future__ import annotations
@@ -25,7 +28,6 @@ from .analyzer import analyze
 from .facts import CanonicalFacts, extract_canonical_facts
 from .llm_client import LLMClient
 from .models import Profile, Vacancy
-from .project_selector import ProjectSelector
 from .validator import ValidationResult, validate_deterministic, validate_semantic
 from .postprocess import postprocess_letter
 from .writer import repair_letter_after_validation, write_letter
@@ -104,10 +106,6 @@ class CoverLetterPipeline:
 
   Tracks `used_starts` across `.generate()` calls to encourage variety in
   the first sentence within a single batch.
-
-  Each pipeline instance owns its own ProjectSelector so that diversity
-  state (_recent_picks) never leaks between independent pipeline instances
-  or test cases.
   """
 
   def __init__(
@@ -125,8 +123,6 @@ class CoverLetterPipeline:
       self.facts: CanonicalFacts = extract_canonical_facts(
           profile, forbidden_claims=forbidden_claims
       )
-      # Per-instance selector — no shared singleton state.
-      self._selector: ProjectSelector = ProjectSelector()
 
   async def generate(self, vacancy: Vacancy) -> GenerationResult:
       try:
@@ -145,7 +141,8 @@ class CoverLetterPipeline:
       selected_achievements_for_numbers: List[str] = list(
           analyzer_json.get("selected_achievements") or []
       )
-      achievements_text = "\n".join(str(item) for item in selected_achievements_for_numbers)
+      achievements_text = "
+".join(str(item) for item in selected_achievements_for_numbers)
 
       for version in ("3.0.2", "3.29.0"):
           if version in achievements_text and version not in selected_numbers:
