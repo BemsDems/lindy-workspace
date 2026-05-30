@@ -57,6 +57,99 @@ def _project_text(project: object) -> str:
     ).lower()
 
 
+# Role-context vocabularies for role-aware project scoring.
+_TEACHING_VACANCY_TERMS = (
+    "преподавател",
+    "спикер",
+    "ментор",
+    "тренер",
+    "лектор",
+    "evangelist",
+    "advocate",
+    "teach",
+    "mentor",
+    "обуч",
+    "курс",
+    "edtech",
+    "лекц",
+    "воркшоп",
+    "митап",
+    "meetup",
+    "выступлени",
+    "наставник",
+    "куратор",
+)
+
+_TEACHING_PROJECT_TERMS = (
+    "преподавал",
+    "ментор",
+    "ментори",
+    "обучал",
+    "обучен",
+    "проводил курс",
+    "проводил лекц",
+    "проводил воркшоп",
+    "митап",
+    "meetup",
+    "code review",
+    "ревью кода",
+    "наставник",
+    "наставнич",
+    "куратор",
+    "выступал",
+    "выступлен",
+    "доклад",
+    "speaker",
+    "speech",
+    "документировал",
+    "документац",
+    "tech-talk",
+    "tech talk",
+    "интервьюер",
+    "проводил собес",
+    "адаптац",
+    "онбординг",
+    "обучающ",
+    "обучил",
+)
+
+_LEAD_VACANCY_TERMS = (
+    "тимлид",
+    "тим-лид",
+    "teamlead",
+    "team lead",
+    "архитектор",
+    "architect",
+    "senior+",
+    "principal",
+    "head of",
+    "руководител",
+    "ведущ",
+    "staff engineer",
+)
+
+_LEAD_PROJECT_TERMS = (
+    "архитектур",
+    "ревью кода",
+    "code review",
+    "наставн",
+    "ментор",
+    "руководи",
+    "вёл команду",
+    "вел команду",
+    "лидировал",
+    "распределял задач",
+    "процесс",
+    "decomposition",
+    "decompos",
+    "архитектурн",
+)
+
+
+def _has_any(text: str, terms: tuple[str, ...]) -> bool:
+    return any(term in text for term in terms)
+
+
 def _score_project_for_vacancy(vacancy: Vacancy, project: object) -> int:
     vacancy_text = _vacancy_text(vacancy)
     project_text = _project_text(project)
@@ -246,6 +339,26 @@ def _score_project_for_vacancy(vacancy: Vacancy, project: object) -> int:
     if grpc_vacancy and grpc_project:
         score += 10
 
+    # === ROLE-AWARE SCORING ===
+    # Teaching / speaker / mentor / advocate vacancies need teaching-flavoured projects.
+    teaching_vacancy = _has_any(vacancy_text, _TEACHING_VACANCY_TERMS)
+    if teaching_vacancy:
+        teaching_project = _has_any(project_text, _TEACHING_PROJECT_TERMS)
+        if teaching_project:
+            score += 14
+        else:
+            # Pure-dev project with zero teaching signal is a bad fit for teaching role.
+            score -= 8
+
+    # Team lead / architect vacancies need leadership-flavoured projects.
+    lead_vacancy = _has_any(vacancy_text, _LEAD_VACANCY_TERMS)
+    if lead_vacancy:
+        lead_project = _has_any(project_text, _LEAD_PROJECT_TERMS)
+        if lead_project:
+            score += 10
+        else:
+            score -= 4
+
     generic_flutter_vacancy = (
         "flutter" in vacancy_text
         and not b2b_vacancy
@@ -254,6 +367,8 @@ def _score_project_for_vacancy(vacancy: Vacancy, project: object) -> int:
         and not auth_vacancy
         and not desktop_vacancy
         and not realestate_vacancy
+        and not teaching_vacancy
+        and not lead_vacancy
     )
     if generic_flutter_vacancy and b2b_project:
         score -= 6
@@ -262,7 +377,7 @@ def _score_project_for_vacancy(vacancy: Vacancy, project: object) -> int:
         x in project_text
         for x in ["социальн", "сообществ", "канал", "пост", "подписк"]
     )
-    if social_project and not media_vacancy and not auth_vacancy:
+    if social_project and not media_vacancy and not auth_vacancy and not teaching_vacancy:
         score -= 5
 
     return score
@@ -336,15 +451,19 @@ def _sanitize_analyzer_result(
 ) -> Dict[str, Any]:
     selector = get_default_selector()
     llm_selected = str(result.get("selected_project") or "") or None
-    
+
     chosen, reason = selector.select(vacancy, facts, llm_selected)
     result["selected_project"] = chosen
     if reason:
         result["confidence_reason"] = reason
 
-    project = facts.projects.get(selected_project)
+    project = facts.projects.get(chosen)
 
     if project is None:
+        logger.warning(
+            "Sanitizer: selector returned project '%s' but it is not in facts.projects",
+            chosen,
+        )
         return result
 
     clean_numbers = []
