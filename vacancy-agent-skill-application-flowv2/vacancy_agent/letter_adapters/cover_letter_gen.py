@@ -12,7 +12,8 @@ from vacancy_agent.letter_adapters.base import LetterAdapter, LetterGenerationRe
 from vacancy_agent.schemas import CandidateProfile, Vacancy
 
 # --- STRICT OUTPUT GUARD START ---
-_STRICT_NEXT_STEP = "Готов обсудить задачи и подробнее рассказать о релевантном опыте на собеседовании."
+# _STRICT_NEXT_STEP removed: FINALIZER_SYSTEM already writes a live ending.
+# The guard must NOT override it with a template phrase.
 
 _STRICT_BAD_ENDING_MARKERS = (
     "этот опыт поможет",
@@ -215,24 +216,30 @@ def _filter_violations_after_guard(violations: list[Any], letter: str) -> list[A
 
 
 def _enforce_strict_letter_rules(letter: str, *, allowed_tech: list[str]) -> str:
+    """Remove forbidden tech claims and weak phrases. Do NOT append any template ending.
+
+    FINALIZER_SYSTEM already writes a live, context-specific closing sentence.
+    Appending _STRICT_NEXT_STEP here would override that live ending with a
+    generic template phrase — exactly the bug this fix addresses.
+    """
     text = _normalize_letter_versions((letter or "").strip())
 
     if not text:
         return text
 
+    # Strip signature if the generator accidentally added it.
     raw_lines = text.splitlines()
     kept_lines = []
 
     for line in raw_lines:
         if line.strip().lower().startswith("с уважением"):
             break
-
         kept_lines.append(line)
 
     text = "\n".join(kept_lines).strip()
 
     if not text:
-        return _STRICT_NEXT_STEP
+        return text
 
     sentences = _split_sentences(text)
     safe_sentences: list[str] = []
@@ -240,29 +247,21 @@ def _enforce_strict_letter_rules(letter: str, *, allowed_tech: list[str]) -> str
     for sentence in sentences:
         if _sentence_contains_forbidden_tech(sentence, allowed_tech):
             continue
-
         if _sentence_contains_weak_phrase(sentence):
             continue
-
         safe_sentences.append(sentence)
 
     if not safe_sentences:
-        safe_sentences = [_STRICT_NEXT_STEP]
+        return ""
 
-    # Если последняя фраза — запрещённая слабая концовка, заменяем её на next step.
+    # If the last sentence is still a weak phrase (edge case), drop it.
+    # Do NOT replace with a template — FINALIZER already wrote a live ending.
     last = safe_sentences[-1].strip().lower()
-
     if any(marker in last for marker in _STRICT_BAD_ENDING_MARKERS):
-        safe_sentences[-1] = _STRICT_NEXT_STEP
-    elif _STRICT_NEXT_STEP not in " ".join(safe_sentences):
-        safe_sentences.append(_STRICT_NEXT_STEP)
+        safe_sentences.pop()
 
-    # Собираем максимум в 2 абзаца: факты + next step.
-    if len(safe_sentences) == 1:
-        return safe_sentences[0].strip()
-
-    if safe_sentences[-1] == _STRICT_NEXT_STEP:
-        return " ".join(safe_sentences[:-1]).strip() + "\n\n" + _STRICT_NEXT_STEP
+    if not safe_sentences:
+        return ""
 
     return " ".join(safe_sentences).strip()
 # --- STRICT OUTPUT GUARD END ---
