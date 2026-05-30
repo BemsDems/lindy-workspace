@@ -20,10 +20,10 @@ from typing import List
 
 
 # Sentence-initial markers that introduce a tech-stack dump.
-# "стек:" is an unambiguous dump lead — drop the whole sentence on match.
+# "Стек:" is an unambiguous dump lead — drop the whole sentence on match.
 _STACK_LEAD_RE = re.compile(
     r"(?:^|(?<=[.!?]\s))\s*"
-    r"(?:стек|технический\s+стек|тех\.?\s*стек|стек\s+технологий)\s*:?\s*",
+    r"(?:стек|техническ[ий]{2}с\*стек|тех\.?\*стек|стек\s*технологий)\s*:?\s*",
     re.IGNORECASE,
 )
 
@@ -32,16 +32,16 @@ _STACK_LEAD_RE = re.compile(
 # like "использовал gRPC-интеграцию" are preserved.
 _VERB_LEAD_RE = re.compile(
     r"(?:^|(?<=[.!?]\s))\s*"
-    r"(?:работал(?:а)?\s+с|использовал(?:а)?(?:\s+следующие)?(?:\s+технологии)?)\s*:?\s*",
+    r"(?:работал(?:а)?\s*с|использовал(?:а)?(?:\s*следующ[ие]{2})?(?:\s*технологии)?)\s*:?\s*",
     re.IGNORECASE,
 )
 
 # A run that looks like a comma/slash-separated list of >=5 capitalized
 # tech tokens — a stack dump even without a "Стек:" lead. Kept as a fast
 # pre-check; the density detector below is the robust path.
-_TECH_TOKEN = r"[A-Z][A-Za-z0-9./+]*(?:\s[A-Z][A-Za-z0-9./+]*)?"
+_TECH_TOKEN = r"[A-Z][A-Za-z0-9./+]+(?:\s[A-Z][A-Za-z0-9./+]+)*?"
 _STACK_LIST_RE = re.compile(
-    rf"(?:{_TECH_TOKEN})(?:\s*[,/]\s*(?:{_TECH_TOKEN})){{4,}}\.?"
+    rf"(?:{_TECH_TOKEN})(?:\s*[,/]\s*(?:{_TECH_TOKEN})){{4,}}\.?",
 )
 
 # Known tech vocabulary (reused from the validator — single source of truth)
@@ -55,7 +55,7 @@ except Exception:  # pragma: no cover
     _VALIDATOR_TECH = set()
 
 _EXTRA_TECH = {
-    "Dio", "Drift", "Sentry", "Protobuf", "Freezed", "Branch", "MapKit",
+    "Dio", "Drift", "Sentri", "Protobuf", "Freezed", "Branch", "MapKit",
     "Injectable", "GetIt", "Isar", "Hive", "Riverpod", "Provider",
 }
 _KNOWN_TECH_LOWER = {t.lower() for t in (_VALIDATOR_TECH | _EXTRA_TECH)}
@@ -67,7 +67,7 @@ _MULTIWORD_TECH = [
 ]
 
 # Connectors allowed *between* tech tokens inside a stack run.
-_RUN_CONNECTOR_RE = re.compile(r"^\s*(?:,|/|;|—|-|\bи\b|\bи\s+|\bдо\b|\bот\b)\s*", re.IGNORECASE)
+_RUN_CONNECTOR_RE = re.compile(r"^\s*(?:,|/|;|—|-|\bи\b|\bи\s+|\bа\b|\bот\b)", re.IGNORECASE)
 
 
 def _longest_tech_run(sentence: str) -> int:
@@ -86,7 +86,7 @@ def _longest_tech_run(sentence: str) -> int:
             s = s[:idx] + ("X" * len(mw)) + s[idx + len(mw):]
             low = s.lower()
             idx = low.find(mw, idx + len(mw))
-    tokens = re.findall(r"[^\s,/;—-]+|[,/;—-]", s)
+    tokens = re.findall(r"[^\s,;/—\-]+|[,;/—\-]", s)
 
     best = cur = 0
     expect_token = True
@@ -122,27 +122,58 @@ def _is_stack_dump_sentence(sentence: str) -> bool:
     """
     return _longest_tech_run(sentence) >= 5
 
-# Weak closing openers — a sentence starting with any of these is filler.
+# Weak closing patterns — narrowly targeted at specific cliché phrasings.
+#
+# Old version matched ANY sentence starting with "готов(а)" or "буду рад(а)",
+# which killed live finals from FINALIZER_SYSTEM such as:
+#   - "Готов показать архитектуру [проекта] на коротком созвоне."
+#   - "Готов привести метрики по…"
+# New version matches ONLY the specific cliché bodies, never the open
+# "готов <something concrete>" constructions.
+#
+# Each pattern is a full-sentence match (lead + body + terminator).
+_WEAK_ENDING_PATTERNS = [
+    # "Готов(а) обсудить задачи/детали/подробности..."
+    r"готов(?:а)?\s+обсудить\s+(?:задачи|детали|подробности|любые\s+вопросы)\b[^.!?]*[.!?]",
+    # "Готов(а) применить (свои|накопленные) (знания|опыт|навыки)..."
+    r"готов(?:а)?\s+применить\b[^.!?]*[.!?]",
+    # "Готов(а) приступить к..."
+    r"готов(?:а)?\s+приступить\b[^.!?]*[.!?]",
+    # "Готов(а) рассказать подробнее/больше..."
+    r"готов(?:а)?\s+рассказать\s+(?:подробнее|больше)\b[^.!?]*[.!?]",
+    # "Готов(а) ответить на (любые) вопросы..."
+    r"готов(?:а)?\s+ответить\s+на\s+(?:любые\s+)?вопрос\w*\b[^.!?]*[.!?]",
+    # "Готов(а) подробнее рассказать о..." (mirror form)
+    r"готов(?:а)?\s+подробнее\s+рассказать\b[^.!?]*[.!?]",
+    # "Буду рад(а) обсудить/пообщаться/услышать/любой обратной связи/возможности..."
+    r"буду\s+рад(?:а)?\s+(?:обсудить|пообщаться|услышать|любой\s+обратной|возможност)\w*\b[^.!?]*[.!?]",
+    # "Хотел(а) бы обсудить/узнать больше/присоединиться/рассмотреть..."
+    r"хотел(?:а)?\s+бы\s+(?:обсудить|узнать\s+больше|присоединиться|рассмотреть|поработать|внести)\b[^.!?]*[.!?]",
+    # "Надеюсь на ваш ответ/положительный ответ/сотрудничество/обратную связь..."
+    r"надеюсь\s+на\s+(?:ваш\s+|положительн|сотруднич|вашу\s+обратн|обратн)\w*\b[^.!?]*[.!?]",
+    # "Рассчитываю на ваш ответ/сотрудничество/положительный ответ..."
+    r"рассчитываю\s+на\s+(?:ваш\s+|положительн|сотруднич|обратн)\w*\b[^.!?]*[.!?]",
+]
+
 _WEAK_ENDING_RE = re.compile(
-    r"(?:^|(?<=[.!?]\s))\s*"
-    r"(?:готов(?:а)?|буду\s+рад(?:а)?|хотел(?:а)?\s+бы|надеюсь|рассчитываю)\b[^.!?]*[.!?]",
+    r"(?:^|(?<=[.!?]\s))\s*(?:" + "|".join(_WEAK_ENDING_PATTERNS) + r")",
     re.IGNORECASE,
 )
 
 # Meta / reasoning leakage lines.
 _META_LEAD_RE = re.compile(
-    r"^\s*(?:вот|итак|конечно|разумеется)\b[\s,]*",
+    r"^\s*(?:вот|итак|конечно|разрешите)\b[,:]*",
     re.IGNORECASE,
 )
 _META_FULL_LINE_RE = re.compile(
-    r"^\s*(?:вот\s+)?(?:готовое\s+)?(?:письмо|ответ|черновик|текст|план|структура)"
-    r"(?:\s+для\s+вас|\s+ниже)?\s*:?\s*$",
+    r"^\s*(?:вот\s+)?(?:готововое\s+)?(?:письмо|ответ|черновик|текст|план|структура)"
+    r"(?:\s+для\s+вас|\s+варь|\s+ниже)?\s*:?\s*$",
     re.IGNORECASE,
 )
 
 _SIGNATURE_RE = re.compile(r"^\s*с\s+уважением\b", re.IGNORECASE)
 
-_WORD_RE = re.compile(r"[\w’'-]+", re.UNICODE)
+_WORD_RE = re.compile(r"[\w\w'\-]+", re.UNICODE)
 
 
 def _word_count(text: str) -> int:
@@ -194,10 +225,10 @@ def strip_stack_dump(text: str) -> str:
             if has_list:
                 if len(m.group(0)) >= 0.6 * len(sent):
                     continue
-                sent = (sent[: m.start()] + sent[m.end():]).strip(" ,;—-")
+                sent = (sent[: m.start()] + sent[m.end() :]).strip(" ,;/—\-")
                 sent = re.sub(r"\(\s*\)", "", sent)
                 sent = re.sub(r"\s+([,;.])", r"\1", sent)
-                sent = re.sub(r"([,;])\s*([,;])", r"\1", sent).strip(" ,;—-")
+                sent = re.sub(r"([,;])\s*([,;])", r"\1", sent).strip(" ,;/—\-")
                 if not sent:
                     continue
             kept.append(sent)
@@ -207,7 +238,12 @@ def strip_stack_dump(text: str) -> str:
 
 
 def strip_weak_ending(text: str) -> str:
-    """Remove a trailing weak/filler sentence ('Готов применить…')."""
+    """Remove a trailing weak/filler sentence ('Готов применить…').
+
+    Only matches the narrow cliché patterns in _WEAK_ENDING_PATTERNS, so
+    live finals like 'Готов показать архитектуру…' or 'Готов привести
+    метрики по проекту…' are preserved.
+    """
     paragraphs = re.split(r"\n\s*\n", text)
     if not paragraphs:
         return text
@@ -246,7 +282,7 @@ def strip_meta_and_signature(text: str) -> str:
 
 
 def normalize_punctuation(text: str) -> str:
-    """Fix punctuation artifacts left by fragment removal.
+    """Fix punctuation artefacts left by fragment removal.
 
     Handles: double dashes ("—  —"), space-before-comma/period, doubled
     commas, empty parens, and stray leading/trailing separators per line.
@@ -254,10 +290,10 @@ def normalize_punctuation(text: str) -> str:
     # Empty parentheses left after excising a list inside them.
     text = re.sub(r"\(\s*\)", "", text)
     # Collapse repeated dashes (possibly space-separated) into one.
-    text = re.sub(r"(?:\s*[—–-]\s*){2,}", " — ", text)
+    text = re.sub(r"(?:\s*[—–\-]\s*){2,}", " — ", text)
     # Space before closing punctuation.
     text = re.sub(r"\s+([,;.!?])", r"\1", text)
-    # Doubled commas/semicolons.
+    # Double commas/semicolons.
     text = re.sub(r"([,;])\s*[,;]+", r"\1", text)
     # Collapse multiple spaces.
     text = re.sub(r"[ \t]{2,}", " ", text)
@@ -277,7 +313,7 @@ def normalize_whitespace(text: str) -> str:
 
 def postprocess_letter(text: str) -> str:
     """Full deterministic clean. Order matters: meta/sig first, then stack,
-    then weak ending, then punctuation artifacts, then whitespace.
+    then weak ending, then punctuation artefacts, then whitespace.
     """
     if not text:
         return text
