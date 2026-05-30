@@ -5,7 +5,7 @@ v2 changes:
 - Passes CanonicalFacts (read-only) into Analyzer and Validator.
 - Routes low-confidence vacancies to universal-letter mode.
 - Emits richer `GenerationResult` (selected_project, confidence,
-  used_numbers, used_tech, attempts, semantic_validator_used).
+used_numbers, used_tech, attempts, semantic_validator_used).
 """
 
 from __future__ import annotations
@@ -29,367 +29,371 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class GenerationResult:
-    vacancy_id: str
-    company: str
-    title: str
-    letter: Optional[str]
-    analyzer_json: Optional[Dict[str, Any]]
-    selected_project: Optional[str]
-    confidence: float
-    confidence_reason: str
-    used_numbers: List[str]
-    used_tech: List[str]
-    universal_mode: bool
-    semantic_validator_used: bool
-    word_count: int
-    passed: bool
-    attempts: int
-    violations: List[Dict[str, str]] = field(default_factory=list)
-    error: Optional[str] = None
+  vacancy_id: str
+  company: str
+  title: str
+  letter: Optional[str]
+  analyzer_json: Optional[Dict[str, Any]]
+  selected_project: Optional[str]
+  confidence: float
+  confidence_reason: str
+  used_numbers: List[str]
+  used_tech: List[str]
+  universal_mode: bool
+  semantic_validator_used: bool
+  word_count: int
+  passed: bool
+  attempts: int
+  violations: List[Dict[str, str]] = field(default_factory=list)
+  error: Optional[str] = None
 
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "vacancy_id": self.vacancy_id,
-            "company": self.company,
-            "title": self.title,
-            "letter": self.letter,
-            "analyzer_json": self.analyzer_json,
-            "selected_project": self.selected_project,
-            "confidence": self.confidence,
-            "confidence_reason": self.confidence_reason,
-            "used_numbers": self.used_numbers,
-            "used_tech": self.used_tech,
-            "universal_mode": self.universal_mode,
-            "semantic_validator_used": self.semantic_validator_used,
-            "word_count": self.word_count,
-            "passed": self.passed,
-            "attempts": self.attempts,
-            "violations": self.violations,
-            "error": self.error,
-        }
+  def to_dict(self) -> Dict[str, Any]:
+      return {
+          "vacancy_id": self.vacancy_id,
+          "company": self.company,
+          "title": self.title,
+          "letter": self.letter,
+          "analyzer_json": self.analyzer_json,
+          "selected_project": self.selected_project,
+          "confidence": self.confidence,
+          "confidence_reason": self.confidence_reason,
+          "used_numbers": self.used_numbers,
+          "used_tech": self.used_tech,
+          "universal_mode": self.universal_mode,
+          "semantic_validator_used": self.semantic_validator_used,
+          "word_count": self.word_count,
+          "passed": self.passed,
+          "attempts": self.attempts,
+          "violations": self.violations,
+          "error": self.error,
+      }
 
 
 @dataclass
 class PipelineConfig:
-    min_words: int = 70
-    max_words: int = 110
-    max_writer_retries: int = 0
-    use_semantic_validator: bool = True
-    # If true, skip deterministic validation entirely (numbers, anglicisms, etc.).
-    # Useful for debugging / prompt iteration.
-    skip_deterministic_validation: bool = False
-    writer_temperature: float = 0.25
-    writer_max_tokens: int = 900
-    writer_two_pass_editing: bool = False
-    repair_on_validation_failed: bool = True
-    # Confidence threshold: vacancies below this trigger universal-letter mode.
-    low_confidence_threshold: float = 0.5
-    # Hard cutoff: below this we don't generate at all.
-    skip_below_confidence: float = 0.2
-    # Per-stage timeout (seconds) for each LLM call wrapped in asyncio.wait_for.
-    # Must be >= llm_client timeout_seconds, otherwise the stage is cut off
-    # mid-request. For slow local models, raise both this and timeout_seconds.
-    stage_timeout: float = 300.0
+  min_words: int = 70
+  max_words: int = 110
+  max_writer_retries: int = 0
+  use_semantic_validator: bool = True
+  # If true, skip deterministic validation entirely (numbers, anglicisms, etc.).
+  # Useful for debugging / prompt iteration.
+  skip_deterministic_validation: bool = False
+  writer_temperature: float = 0.25
+  writer_max_tokens: int = 900
+  writer_two_pass_editing: bool = False
+  repair_on_validation_failed: bool = True
+  # Confidence threshold: vacancies below this trigger universal-letter mode.
+  low_confidence_threshold: float = 0.5
+  # Hard cutoff: below this we don't generate at all.
+  skip_below_confidence: float = 0.2
+  # Per-stage timeout (seconds) for each LLM call wrapped in asyncio.wait_for.
+  # Must be >= llm_client timeout_seconds, otherwise the stage is cut off
+  # mid-request. For slow local models, raise both this and timeout_seconds.
+  stage_timeout: float = 300.0
 
 
 class CoverLetterPipeline:
-    """Stateful pipeline.
+  """Stateful pipeline.
 
-    Tracks `used_starts` across `.generate()` calls to encourage variety in
-    the first sentence within a single batch.
-    """
+  Tracks `used_starts` across `.generate()` calls to encourage variety in
+  the first sentence within a single batch.
+  """
 
-    def __init__(
-        self,
-        llm: LLMClient,
-        profile: Profile,
-        config: Optional[PipelineConfig] = None,
-        *,
-        forbidden_claims: Optional[List[str]] = None,
-    ):
-        self.llm = llm
-        self.profile = profile
-        self.config = config or PipelineConfig()
-        self.used_starts: List[str] = []
-        self.facts: CanonicalFacts = extract_canonical_facts(
-            profile, forbidden_claims=forbidden_claims
-        )
+  def __init__(
+      self,
+      llm: LLMClient,
+      profile: Profile,
+      config: Optional[PipelineConfig] = None,
+      *,
+      forbidden_claims: Optional[List[str]] = None,
+  ):
+      self.llm = llm
+      self.profile = profile
+      self.config = config or PipelineConfig()
+      self.used_starts: List[str] = []
+      self.facts: CanonicalFacts = extract_canonical_facts(
+          profile, forbidden_claims=forbidden_claims
+      )
 
-    async def generate(self, vacancy: Vacancy) -> GenerationResult:
-        try:
-            analyzer_json = await asyncio.wait_for(analyze(self.llm, vacancy, self.facts), timeout=self.config.stage_timeout)
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("Analyzer failed for vacancy %s", vacancy.id)
-            return _error_result(vacancy, error=f"analyzer: {exc}")
+  async def generate(self, vacancy: Vacancy) -> GenerationResult:
+      try:
+          analyzer_json = await asyncio.wait_for(analyze(self.llm, vacancy, self.facts), timeout=self.config.stage_timeout)
+      except Exception as exc:  # noqa: BLE001
+          logger.exception("Analyzer failed for vacancy %s", vacancy.id)
+          return _error_result(vacancy, error=f"analyzer: {exc}")
 
-        confidence = float(analyzer_json.get("confidence", 0.0))
-        confidence_reason = str(analyzer_json.get("confidence_reason") or "")
-        selected_project = str(analyzer_json.get("selected_project") or "")
-        selected_numbers: List[str] = list(analyzer_json.get("selected_numbers") or [])
-        selected_achievements_for_numbers: List[str] = list(analyzer_json.get("selected_achievements") or [])
-        achievements_text = "\n".join(str(item) for item in selected_achievements_for_numbers)
+      confidence = float(analyzer_json.get("confidence", 0.0))
+      confidence_reason = str(analyzer_json.get("confidence_reason") or "")
+      selected_project = str(analyzer_json.get("selected_project") or "")
+      selected_numbers: List[str] = list(analyzer_json.get("selected_numbers") or [])
+      selected_achievements_for_numbers: List[str] = list(analyzer_json.get("selected_achievements") or [])
+      achievements_text = "\n".join(str(item) for item in selected_achievements_for_numbers)
 
-        for version in ("3.0.2", "3.29.0"):
-            if version in achievements_text and version not in selected_numbers:
-                selected_numbers.append(version)
+      for version in ("3.0.2", "3.29.0"):
+          if version in achievements_text and version not in selected_numbers:
+              selected_numbers.append(version)
 
-        # Always include years of experience if not present.
-        years = str(self.facts.experience_years)
-        if years not in selected_numbers:
-            selected_numbers.insert(0, years)
+      # Always include years of experience if not present.
+      years = str(self.facts.experience_years)
+      if years not in selected_numbers:
+          selected_numbers.insert(0, years)
 
-        # Limit to 5 numbers max, but preserve years and allowed Flutter versions.
-        priority_numbers = [years, "3.0.2", "3.29.0"]
-        preserved: List[str] = []
+      # Limit to 5 numbers max, but preserve years and allowed Flutter versions.
+      priority_numbers = [years, "3.0.2", "3.29.0"]
+      preserved: List[str] = []
 
-        for number in priority_numbers:
-            if number in selected_numbers and number not in preserved:
-                preserved.append(number)
+      for number in priority_numbers:
+          if number in selected_numbers and number not in preserved:
+              preserved.append(number)
 
-        for number in selected_numbers:
-            if number not in preserved:
-                preserved.append(number)
+      for number in selected_numbers:
+          if number not in preserved:
+              preserved.append(number)
 
-        selected_numbers = preserved[:5]
-        analyzer_json["selected_numbers"] = selected_numbers
+      selected_numbers = preserved[:5]
+      analyzer_json["selected_numbers"] = selected_numbers
 
-        # Hard skip on very low confidence — emit a result with no letter.
-        if confidence < self.config.skip_below_confidence:
-            logger.info(
-                "Vacancy %s: confidence %.2f below skip threshold %.2f — skipping",
-                vacancy.id, confidence, self.config.skip_below_confidence,
-            )
-            return GenerationResult(
-                vacancy_id=vacancy.id,
-                company=vacancy.company,
-                title=vacancy.title,
-                letter=None,
-                analyzer_json=analyzer_json,
-                selected_project=selected_project,
-                confidence=confidence,
-                confidence_reason=confidence_reason,
-                used_numbers=[],
-                used_tech=[],
-                universal_mode=False,
-                semantic_validator_used=False,
-                word_count=0,
-                passed=False,
-                attempts=0,
-                error="skipped_low_confidence",
-            )
+      # Hard skip on very low confidence — emit a result with no letter.
+      if confidence < self.config.skip_below_confidence:
+          logger.info(
+              "Vacancy %s: confidence %.2f below skip threshold %.2f — skipping",
+              vacancy.id, confidence, self.config.skip_below_confidence,
+          )
+          return GenerationResult(
+              vacancy_id=vacancy.id,
+              company=vacancy.company,
+              title=vacancy.title,
+              letter=None,
+              analyzer_json=analyzer_json,
+              selected_project=selected_project,
+              confidence=confidence,
+              confidence_reason=confidence_reason,
+              used_numbers=[],
+              used_tech=[],
+              universal_mode=False,
+              semantic_validator_used=False,
+              word_count=0,
+              passed=False,
+              attempts=0,
+              error="skipped_low_confidence",
+          )
 
-        universal_mode = confidence < self.config.low_confidence_threshold
-        if universal_mode:
-            logger.info(
-                "Vacancy %s: confidence %.2f below %.2f — universal mode",
-                vacancy.id, confidence, self.config.low_confidence_threshold,
-            )
+      universal_mode = confidence < self.config.low_confidence_threshold
+      if universal_mode:
+          logger.info(
+              "Vacancy %s: confidence %.2f below %.2f — universal mode",
+              vacancy.id, confidence, self.config.low_confidence_threshold,
+          )
 
-        feedback: Optional[str] = None
-        last_letter: str = ""
-        last_result: Optional[ValidationResult] = None
-        semantic_used = False
+      feedback: Optional[str] = None
+      last_letter: str = ""
+      last_result: Optional[ValidationResult] = None
+      semantic_used = False
 
-        for attempt in range(1, self.config.max_writer_retries + 2):
-            try:
-                last_letter = await asyncio.wait_for(
-                    write_letter(
-                        self.llm,
-                        analyzer_json=analyzer_json,
-                        facts=self.facts,
-                        used_starts=self.used_starts,
-                        feedback=feedback,
-                        universal_mode=universal_mode,
-                        temperature=self.config.writer_temperature,
-                        max_tokens=self.config.writer_max_tokens,
-                        two_pass_editing=self.config.writer_two_pass_editing,
-                    ),
-                    timeout=self.config.stage_timeout,
-                )
-                last_letter = postprocess_letter(last_letter)
-            except Exception as exc:  # noqa: BLE001
-                logger.exception("Writer failed (attempt %d) for vacancy %s", attempt, vacancy.id)
-                return _error_result(
-                    vacancy,
-                    error=f"writer: {exc}",
-                    analyzer_json=analyzer_json,
-                    confidence=confidence,
-                    confidence_reason=confidence_reason,
-                    selected_project=selected_project,
-                    universal_mode=universal_mode,
-                    attempts=attempt,
-                )
+      for attempt in range(1, self.config.max_writer_retries + 2):
+          try:
+              last_letter = await asyncio.wait_for(
+                  write_letter(
+                      self.llm,
+                      analyzer_json=analyzer_json,
+                      facts=self.facts,
+                      used_starts=self.used_starts,
+                      feedback=feedback,
+                      universal_mode=universal_mode,
+                      temperature=self.config.writer_temperature,
+                      max_tokens=self.config.writer_max_tokens,
+                      two_pass_editing=self.config.writer_two_pass_editing,
+                      vacancy_title=vacancy.title or "",
+                      vacancy_company=vacancy.company or "",
+                      vacancy_description=vacancy.description or "",
+                      vacancy_requirements=list(vacancy.requirements or []),
+                  ),
+                  timeout=self.config.stage_timeout,
+              )
+              last_letter = postprocess_letter(last_letter)
+          except Exception as exc:  # noqa: BLE001
+              logger.exception("Writer failed (attempt %d) for vacancy %s", attempt, vacancy.id)
+              return _error_result(
+                  vacancy,
+                  error=f"writer: {exc}",
+                  analyzer_json=analyzer_json,
+                  confidence=confidence,
+                  confidence_reason=confidence_reason,
+                  selected_project=selected_project,
+                  universal_mode=universal_mode,
+                  attempts=attempt,
+              )
 
-            if self.config.skip_deterministic_validation:
-                det = ValidationResult(
-                    passed=True,
-                    violations=[],
-                    word_count=len(last_letter.split()),
-                    used_numbers=list(selected_numbers),
-                    used_tech=[],
-                )
-            else:
-                # Deterministic validation is pure regex (synchronous, microseconds):
-                # no await / timeout wrapper needed.
-                det = validate_deterministic(
-                    last_letter,
-                    facts=self.facts,
-                    allowed_numbers=selected_numbers,
-                    selected_achievements=analyzer_json.get("selected_achievements") or [],
-                    min_words=self.config.min_words,
-                    max_words=self.config.max_words,
-                    universal_mode=universal_mode,
-                )
-                if not det.passed:
-                    feedback = det.format_feedback()
-                    last_result = det
-                    logger.info(
-                        "Vacancy %s: attempt %d failed deterministic validation (%d violations)",
-                        vacancy.id, attempt, len(det.violations),
-                    )
-                    # Give up once we've exhausted the configured retries.
-                    if attempt >= self.config.max_writer_retries + 1:
-                        return GenerationResult(
-                            vacancy_id=vacancy.id,
-                            company=vacancy.company,
-                            title=vacancy.title,
-                            letter=last_letter,
-                            analyzer_json=analyzer_json,
-                            selected_project=selected_project,
-                            confidence=confidence,
-                            confidence_reason=confidence_reason,
-                            used_numbers=det.used_numbers,
-                            used_tech=det.used_tech,
-                            universal_mode=universal_mode,
-                            semantic_validator_used=False,
-                            word_count=det.word_count,
-                            passed=False,
-                            attempts=attempt,
-                            error="validation_failed_after_retries",
-                            violations=[v.to_dict() for v in det.violations],
-                        )
-                    continue
+          if self.config.skip_deterministic_validation:
+              det = ValidationResult(
+                  passed=True,
+                  violations=[],
+                  word_count=len(last_letter.split()),
+                  used_numbers=list(selected_numbers),
+                  used_tech=[],
+              )
+          else:
+              # Deterministic validation is pure regex (synchronous, microseconds):
+              # no await / timeout wrapper needed.
+              det = validate_deterministic(
+                  last_letter,
+                  facts=self.facts,
+                  allowed_numbers=selected_numbers,
+                  selected_achievements=analyzer_json.get("selected_achievements") or [],
+                  min_words=self.config.min_words,
+                  max_words=self.config.max_words,
+                  universal_mode=universal_mode,
+              )
+              if not det.passed:
+                  feedback = det.format_feedback()
+                  last_result = det
+                  logger.info(
+                      "Vacancy %s: attempt %d failed deterministic validation (%d violations)",
+                      vacancy.id, attempt, len(det.violations),
+                  )
+                  # Give up once we've exhausted the configured retries.
+                  if attempt >= self.config.max_writer_retries + 1:
+                      return GenerationResult(
+                          vacancy_id=vacancy.id,
+                          company=vacancy.company,
+                          title=vacancy.title,
+                          letter=last_letter,
+                          analyzer_json=analyzer_json,
+                          selected_project=selected_project,
+                          confidence=confidence,
+                          confidence_reason=confidence_reason,
+                          used_numbers=det.used_numbers,
+                          used_tech=det.used_tech,
+                          universal_mode=universal_mode,
+                          semantic_validator_used=False,
+                          word_count=det.word_count,
+                          passed=False,
+                          attempts=attempt,
+                          error="validation_failed_after_retries",
+                          violations=[v.to_dict() for v in det.violations],
+                      )
+                  continue
 
-            if self.config.use_semantic_validator:
-                semantic_used = True
-                try:
-                    sem = await asyncio.wait_for(
-                    validate_semantic(
-                        self.llm,
-                        last_letter,
-                        analyzer_json,
-                        selected_numbers or list(self.facts.allowed_numbers),
-                    ),
-                    timeout=self.config.stage_timeout,
-                )
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("Semantic validator errored, treating as passed: %s", exc)
-                    sem = ValidationResult(passed=True, violations=[], word_count=det.word_count)
+          if self.config.use_semantic_validator:
+              semantic_used = True
+              try:
+                  sem = await asyncio.wait_for(
+                  validate_semantic(
+                      self.llm,
+                      last_letter,
+                      analyzer_json,
+                      selected_numbers or list(self.facts.allowed_numbers),
+                  ),
+                  timeout=self.config.stage_timeout,
+              )
+              except Exception as exc:  # noqa: BLE001
+                  logger.warning("Semantic validator errored, treating as passed: %s", exc)
+                  sem = ValidationResult(passed=True, violations=[], word_count=det.word_count)
 
-                if not sem.passed:
-                    feedback = sem.format_feedback()
-                    # Preserve det.used_numbers/used_tech (semantic doesn't compute them).
-                    sem.used_numbers = det.used_numbers
-                    sem.used_tech = det.used_tech
-                    last_result = sem
-                    logger.info(
-                        "Vacancy %s: attempt %d failed semantic validation (%d violations)",
-                        vacancy.id, attempt, len(sem.violations),
-                    )
-                    continue
-                # Semantic passed — merge det's used_* into the result.
-                sem.used_numbers = det.used_numbers
-                sem.used_tech = det.used_tech
-                last_result = sem
-            else:
-                last_result = det
+              if not sem.passed:
+                  feedback = sem.format_feedback()
+                  # Preserve det.used_numbers/used_tech (semantic doesn't compute them).
+                  sem.used_numbers = det.used_numbers
+                  sem.used_tech = det.used_tech
+                  last_result = sem
+                  logger.info(
+                      "Vacancy %s: attempt %d failed semantic validation (%d violations)",
+                      vacancy.id, attempt, len(sem.violations),
+                  )
+                  continue
+              # Semantic passed — merge det's used_* into the result.
+              sem.used_numbers = det.used_numbers
+              sem.used_tech = det.used_tech
+              last_result = sem
+          else:
+              last_result = det
 
-            # Success: record opener for variety.
-            opener = last_letter.strip().split(".", 1)[0]
-            if opener:
-                self.used_starts.append(opener[:80])
+          # Success: record opener for variety.
+          opener = last_letter.strip().split(".", 1)[0]
+          if opener:
+              self.used_starts.append(opener[:80])
 
-            return GenerationResult(
-                vacancy_id=vacancy.id,
-                company=vacancy.company,
-                title=vacancy.title,
-                letter=last_letter,
-                analyzer_json=analyzer_json,
-                selected_project=selected_project,
-                confidence=confidence,
-                confidence_reason=confidence_reason,
-                used_numbers=list(last_result.used_numbers),
-                used_tech=list(last_result.used_tech),
-                universal_mode=universal_mode,
-                semantic_validator_used=semantic_used,
-                word_count=det.word_count,
-                passed=True,
-                attempts=attempt,
-            )
+          return GenerationResult(
+              vacancy_id=vacancy.id,
+              company=vacancy.company,
+              title=vacancy.title,
+              letter=last_letter,
+              analyzer_json=analyzer_json,
+              selected_project=selected_project,
+              confidence=confidence,
+              confidence_reason=confidence_reason,
+              used_numbers=list(last_result.used_numbers),
+              used_tech=list(last_result.used_tech),
+              universal_mode=universal_mode,
+              semantic_validator_used=semantic_used,
+              word_count=det.word_count,
+              passed=True,
+              attempts=attempt,
+          )
 
-        # Out of retries.
-        violations = [v.to_dict() for v in (last_result.violations if last_result else [])]
-        return GenerationResult(
-            vacancy_id=vacancy.id,
-            company=vacancy.company,
-            title=vacancy.title,
-            letter=last_letter or None,
-            analyzer_json=analyzer_json,
-            selected_project=selected_project,
-            confidence=confidence,
-            confidence_reason=confidence_reason,
-            used_numbers=list(last_result.used_numbers) if last_result else [],
-            used_tech=list(last_result.used_tech) if last_result else [],
-            universal_mode=universal_mode,
-            semantic_validator_used=semantic_used,
-            word_count=(last_result.word_count if last_result else 0),
-            passed=False,
-            attempts=self.config.max_writer_retries + 1,
-            violations=violations,
-            error="validation_failed_after_retries",
-        )
+      # Out of retries.
+      violations = [v.to_dict() for v in (last_result.violations if last_result else [])]
+      return GenerationResult(
+          vacancy_id=vacancy.id,
+          company=vacancy.company,
+          title=vacancy.title,
+          letter=last_letter or None,
+          analyzer_json=analyzer_json,
+          selected_project=selected_project,
+          confidence=confidence,
+          confidence_reason=confidence_reason,
+          used_numbers=list(last_result.used_numbers) if last_result else [],
+          used_tech=list(last_result.used_tech) if last_result else [],
+          universal_mode=universal_mode,
+          semantic_validator_used=semantic_used,
+          word_count=(last_result.word_count if last_result else 0),
+          passed=False,
+          attempts=self.config.max_writer_retries + 1,
+          violations=violations,
+          error="validation_failed_after_retries",
+      )
 
-    async def generate_batch(
-        self,
-        vacancies: List[Vacancy],
-        *,
-        max_concurrent: int = 5,
-    ) -> List[GenerationResult]:
-        sem = asyncio.Semaphore(max_concurrent)
+  async def generate_batch(
+      self,
+      vacancies: List[Vacancy],
+      *,
+      max_concurrent: int = 5,
+  ) -> List[GenerationResult]:
+      sem = asyncio.Semaphore(max_concurrent)
 
-        async def _one(v: Vacancy) -> GenerationResult:
-            async with sem:
-                return await self.generate(v)
+      async def _one(v: Vacancy) -> GenerationResult:
+          async with sem:
+              return await self.generate(v)
 
-        return await asyncio.gather(*(_one(v) for v in vacancies))
+      return await asyncio.gather(*(_one(v) for v in vacancies))
 
 
 def _error_result(
-    vacancy: Vacancy,
-    *,
-    error: str,
-    analyzer_json: Optional[Dict[str, Any]] = None,
-    confidence: float = 0.0,
-    confidence_reason: str = "",
-    selected_project: Optional[str] = None,
-    universal_mode: bool = False,
-    attempts: int = 0,
+  vacancy: Vacancy,
+  *,
+  error: str,
+  analyzer_json: Optional[Dict[str, Any]] = None,
+  confidence: float = 0.0,
+  confidence_reason: str = "",
+  selected_project: Optional[str] = None,
+  universal_mode: bool = False,
+  attempts: int = 0,
 ) -> GenerationResult:
-    return GenerationResult(
-        vacancy_id=vacancy.id,
-        company=vacancy.company,
-        title=vacancy.title,
-        letter=None,
-        analyzer_json=analyzer_json,
-        selected_project=selected_project,
-        confidence=confidence,
-        confidence_reason=confidence_reason,
-        used_numbers=[],
-        used_tech=[],
-        universal_mode=universal_mode,
-        semantic_validator_used=False,
-        word_count=0,
-        passed=False,
-        attempts=attempts,
-        error=error,
-    )
+  return GenerationResult(
+      vacancy_id=vacancy.id,
+      company=vacancy.company,
+      title=vacancy.title,
+      letter=None,
+      analyzer_json=analyzer_json,
+      selected_project=selected_project,
+      confidence=confidence,
+      confidence_reason=confidence_reason,
+      used_numbers=[],
+      used_tech=[],
+      universal_mode=universal_mode,
+      semantic_validator_used=False,
+      word_count=0,
+      passed=False,
+      attempts=attempts,
+      error=error,
+  )
