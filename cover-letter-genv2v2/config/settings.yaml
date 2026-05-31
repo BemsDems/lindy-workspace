@@ -1,7 +1,7 @@
 # Copy to settings.yaml and fill in. Real file is git-ignored.
 # Values here are also overridable via env vars (LLM_API_KEY, LLM_ENDPOINT, LLM_MODEL).
 llm:
-  api_key: "${LLM_API_KEY}"
+  api_key: "sk-funpay77-9Y7xQ2pW5mN1rB8vK4zL6tX0qJ3f&hSg*20581463ZRXOYIUA"
   endpoint: "http://localhost:20128/v1/chat/completions"
   model: "openrouter/owl-alpha"
 
