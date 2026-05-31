@@ -1,11 +1,9 @@
 # Copy to settings.yaml and fill in. Real file is git-ignored.
 # Values here are also overridable via env vars (LLM_API_KEY, LLM_ENDPOINT, LLM_MODEL).
 llm:
-  api_key: "sk-funpay77-9Y7xQ2pW5mN1rB8vK4zL6tX0qJ3f&hSg*20581463ZRXOYIUA"
+  api_key: "${LLM_API_KEY}"
   endpoint: "http://localhost:20128/v1/chat/completions"
   model: "openrouter/owl-alpha"
-  headers:
-    x-api-key: "sk-funpay77-9Y7xQ2pW5mN1rB8vK4zL6tX0qJ3f&hSg*20581463ZRXOYIUA"
 
   # Tuned per stage inside the pipeline; these are fallback defaults.
   timeout_seconds: 120
@@ -32,24 +30,6 @@ pipeline:
 
   # Analyzer.confidence < this → skip generation entirely.
   skip_below_confidence: 0.2
-
-  # --- explicit safe defaults (mirror PipelineConfig defaults, kept explicit
-  # so a future settings.yaml edit can't silently flip them) ---
-
-  # If True, validation failure triggers a targeted repair_letter_after_validation()
-  # call instead of a full write_letter() retry. Cheaper and more accurate.
-  repair_on_validation_failed: true
-
-  # If True, after deterministic validation also run the LLM-based semantic
-  # validator (catches forbidden_claims, hype, invented numbers in context).
-  use_semantic_validator: true
-
-  # Sampling temperature for the Writer LLM call. Higher = more variety,
-  # lower = more deterministic. 0.25 is a tested sweet spot.
-  writer_temperature: 0.25
-
-  # Hard ceiling on tokens the Writer can emit per attempt.
-  writer_max_tokens: 900
 
 # Optional. Smell-phrases that must NOT appear in the letter unless they're
 # also present in the resume itself. Useful to block hallucinations like

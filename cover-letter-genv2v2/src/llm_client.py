@@ -123,7 +123,7 @@ class LLMClient:
                 payload["response_format"] = {"type": "json_object"}
 
             headers = {
-                "Authorization": f"Bearer {self.config.api_key}",
+                "Authorization": self.config.api_key,
                 "Content-Type": "application/json",
             }
 
