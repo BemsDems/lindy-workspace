@@ -31,6 +31,24 @@ pipeline:
   # Analyzer.confidence < this → skip generation entirely.
   skip_below_confidence: 0.2
 
+  # --- explicit safe defaults (mirror PipelineConfig defaults, kept explicit
+  # so a future settings.yaml edit can't silently flip them) ---
+
+  # If True, validation failure triggers a targeted repair_letter_after_validation()
+  # call instead of a full write_letter() retry. Cheaper and more accurate.
+  repair_on_validation_failed: true
+
+  # If True, after deterministic validation also run the LLM-based semantic
+  # validator (catches forbidden_claims, hype, invented numbers in context).
+  use_semantic_validator: true
+
+  # Sampling temperature for the Writer LLM call. Higher = more variety,
+  # lower = more deterministic. 0.25 is a tested sweet spot.
+  writer_temperature: 0.25
+
+  # Hard ceiling on tokens the Writer can emit per attempt.
+  writer_max_tokens: 900
+
 # Optional. Smell-phrases that must NOT appear in the letter unless they're
 # also present in the resume itself. Useful to block hallucinations like
 # "финтех" / "сотни пользователей" when your resume doesn't actually mention
