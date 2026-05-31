@@ -102,8 +102,11 @@ class CanonicalFacts:
         ]
 
 
-# Number tokens: 1-6 digits with optional thousands-style space ("11 000").
-_NUMBER_RE = re.compile(r"(?<!\w)(\d[\d\s]{0,4}\d|\d)\+?(?!\w)")
+# Number tokens: capture digits with optional thousands-style space/comma
+# separators AND dotted version strings ("3.0.2", "3.29.0"). The validator
+# uses the same shape, so whitelist tokens line up with what the letter contains.
+# Examples this matches: "3", "11 000", "1,300", "3+", "3.0.2", "3.29.0", "10+".
+_NUMBER_RE = re.compile(r"(?<!\w)(\d[\d\s.,]{0,8}\d|\d)\+?(?!\w)")
 
 
 def extract_canonical_facts(
