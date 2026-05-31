@@ -4,6 +4,8 @@ llm:
   api_key: "${LLM_API_KEY}"
   endpoint: "http://localhost:20128/v1/chat/completions"
   model: "openrouter/owl-alpha"
+  headers:
+    x-api-key: "sk-bfd1ecff86d98705-f14b03-2fdc2632"
 
   # Tuned per stage inside the pipeline; these are fallback defaults.
   timeout_seconds: 120
