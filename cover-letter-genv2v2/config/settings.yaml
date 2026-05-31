@@ -5,7 +5,7 @@ llm:
   endpoint: "http://localhost:20128/v1/chat/completions"
   model: "openrouter/owl-alpha"
   headers:
-    Authorization: "sk-funpay77-9Y7xQ2pW5mN1rB8vK4zL6tX0qJ3f&hSg*20581463ZRXOYIUA"
+    x-api-key: "sk-funpay77-9Y7xQ2pW5mN1rB8vK4zL6tX0qJ3f&hSg*20581463ZRXOYIUA"
 
   # Tuned per stage inside the pipeline; these are fallback defaults.
   timeout_seconds: 120
