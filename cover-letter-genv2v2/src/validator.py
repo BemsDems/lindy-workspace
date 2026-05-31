@@ -3,7 +3,8 @@
 Deterministic rules (regex/string-level, no LLM):
 - word count in [min_words, max_words]
 - every number token in the letter must be in `allowed_numbers`
-- forbidden claims (grounded against the resume) must not appear
+- forbidden claims (grounded against the resume) must not appear (substring)
+- forbidden regex patterns (grounded) must not match (regex)
 - no years-of-experience framing in the opener (first 2 sentences)
 - tech tokens outside the global allowlist are flagged
 
@@ -89,8 +90,11 @@ class ValidationResult:
 
 # --- Deterministic validation -------------------------------------------------
 
-# Matches number tokens like "3", "11 000", "3.0.2", "3+", "10+", "1,3".
-_NUMBER_RE = re.compile(r"(?<!\w)(\d[\d\s.,]{0,6}\d|\d)\+?(?!\w)")
+# Matches number tokens like "3", "11 000", "11 381", "32 840", "3.0.2",
+# "3+", "10+", "1,3", "2 682". The {0,12} allows multi-thousand numbers with
+# internal whitespace to match as ONE token (previously {0,6} broke "11 381"
+# into ("11", "381") and only the first half was checked against the whitelist).
+_NUMBER_RE = re.compile(r"(?<!\w)(\d[\d\s.,]{0,12}\d|\d)\+?(?!\w)")
 
 # Matches years-of-experience phrases anywhere in a string:
 #   "3+ года", "5 лет", "три года", "три+ года", "3 г.", "3+ г"
@@ -186,7 +190,7 @@ def validate_deterministic(
                 fix_hint=f"Удали '{token}' или замени на число из allowed_numbers: {sorted(allowed_set)[:8]}",
             ))
 
-    # 3. Forbidden claims (grounded against the resume).
+    # 3. Forbidden claims — substring (grounded against the resume).
     grounded_forbidden = facts.forbidden_claims_grounded()
     letter_lower = text.lower()
     for phrase in grounded_forbidden:
@@ -196,6 +200,28 @@ def validate_deterministic(
                 severity="hard",
                 evidence=f"запрещённая фраза '{phrase}' (нет в резюме)",
                 fix_hint=f"Убери '{phrase}' — этого нет в опыте кандидата.",
+            ))
+
+    # 3a. Forbidden patterns — regex (grounded against the resume).
+    # Catches per-digit hallucinations (X% efficiency, X млн пользователей,
+    # X-минутный созвон, после 17:00, etc.) that vary by digit and so can't
+    # be enumerated as static substrings.
+    grounded_regexes = []
+    if hasattr(facts, "forbidden_regexes_grounded"):
+        grounded_regexes = facts.forbidden_regexes_grounded()
+    for pattern in grounded_regexes:
+        match = pattern.search(text)
+        if match:
+            matched_text = match.group(0)
+            violations.append(Violation(
+                rule="forbidden_pattern",
+                severity="hard",
+                evidence=f"запрещённый шаблон '{matched_text}' (нет в резюме)",
+                fix_hint=(
+                    f"Убери '{matched_text}' — это выдуманный факт "
+                    f"(процент эффективности / масштаб аудитории / конкретное время), "
+                    f"которого нет в резюме."
+                ),
             ))
 
     # 4. No years-of-experience framing in the opener (first 2 sentences).
