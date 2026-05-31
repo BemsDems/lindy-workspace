@@ -53,6 +53,21 @@ _SIGNATURE_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+# Years-of-experience opener: "3+ года ...", "3 лет ...", "5+ лет коммерческой ...",
+# etc. Matches a sentence that STARTS with a digit, optional plus, then
+# лет/года/год (case-insensitive). This is the deterministic guard against
+# LLM bias toward the canned "3+ года Flutter-разработки" opener despite
+# explicit prompt-level prohibitions in writer.FINALIZER_SYSTEM.
+_YEARS_OPENER_RE = re.compile(
+    r"^\s*\d+\s*\+?\s*(?:лет|года|год)\b",
+    re.IGNORECASE,
+)
+
+_GREETING_RE = re.compile(
+    r"^\s*(?:здравствуйте|добрый\s+день|добрый\s+вечер|доброе\s+утро|приветствую|hello|hi)[\s,!.\-—]*",
+    re.IGNORECASE,
+)
+
 _WORD_RE = re.compile(r"\w+", re.UNICODE)
 
 _PARAGRAPH_SPLIT_RE = re.compile(r"\n\s*\n")
@@ -99,6 +114,80 @@ def strip_meta_and_signature(text: str) -> str:
     out = "\n".join(cleaned)
     out = _SIGNATURE_RE.sub("", out)
     return out.strip()
+
+
+def strip_years_opener(text: str) -> str:
+    """Deterministic guard against the canned 'X+ лет/года' opener.
+
+    The LLM keeps falling back to 'X+ года коммерческой Flutter-разработки' as
+    the first sentence despite explicit FINALIZER_SYSTEM rules and the
+    years-free opener_pool. This is the last-line defense: if the first
+    real sentence (after an optional greeting) starts with a digit + лет/года,
+    we drop that sentence entirely.
+
+    Behavior:
+      - Operates only on the FIRST paragraph.
+      - Skips an optional leading greeting ('Здравствуйте,', 'Добрый день,', etc.)
+        and re-attaches it after the strip.
+      - Only removes if the years-opener pattern matches the FIRST sentence
+        of the first paragraph (we don't touch mid-letter mentions like
+        '...за 3 года в Food One...').
+      - Rollback guard: if removal would leave the first paragraph with
+        zero sentences AND the letter has only one paragraph, we keep
+        the original sentence (no other content to fall back to).
+    """
+    paragraphs = _PARAGRAPH_SPLIT_RE.split(text)
+    paragraphs = [p.strip() for p in paragraphs if p.strip()]
+    if not paragraphs:
+        return text
+
+    first_para = paragraphs[0]
+    greeting = ""
+    body = first_para
+    greeting_match = _GREETING_RE.match(first_para)
+    if greeting_match:
+        greeting = first_para[: greeting_match.end()].rstrip() + " "
+        body = first_para[greeting_match.end():].lstrip()
+
+    sentences = _split_sentences(body)
+    if not sentences:
+        return text
+
+    if not _YEARS_OPENER_RE.match(sentences[0]):
+        return text
+
+    removed_sentence = sentences[0]
+    remaining = sentences[1:]
+
+    # Rollback: if dropping the opener leaves the entire first paragraph
+    # empty AND it's the only paragraph, keep the original — we have
+    # nothing else to anchor the letter on.
+    if not remaining and len(paragraphs) <= 1:
+        logger.debug(
+            "strip_years_opener: rolled back removal — opener is the only sentence "
+            "in a single-paragraph letter: %r",
+            removed_sentence[:80],
+        )
+        return text
+
+    logger.info(
+        "strip_years_opener: removed canned years-experience opener: %r",
+        removed_sentence[:120],
+    )
+
+    if remaining:
+        new_first_para = (greeting + " ".join(remaining)).strip()
+        paragraphs[0] = new_first_para
+    else:
+        # First paragraph collapsed to just the greeting (or empty) and we
+        # have more paragraphs — drop the empty first paragraph entirely
+        # so the next paragraph becomes the new opener, but preserve the
+        # greeting by prepending it to the new first paragraph.
+        if greeting.strip():
+            paragraphs[1] = (greeting + paragraphs[1]).strip()
+        paragraphs.pop(0)
+
+    return "\n\n".join(paragraphs)
 
 
 def strip_stack_dump(text: str) -> str:
@@ -188,8 +277,10 @@ def normalize_whitespace(text: str) -> str:
 
 
 def postprocess_letter(text: str) -> str:
-    """Full deterministic clean. Order matters: meta/sig first, then stack,
-    then weak ending, then punctuation artefacts, then whitespace.
+    """Full deterministic clean. Order matters: meta/sig first, then the
+    years-opener guard (must run BEFORE stack-dump and weak-ending so they
+    operate on the corrected opener), then stack-dump, then weak ending,
+    then punctuation artefacts, then whitespace.
 
     All stages are PARAGRAPH-AWARE: they preserve \n\n boundaries so the
     final letter keeps its visual structure (greeting | body | second
@@ -199,6 +290,7 @@ def postprocess_letter(text: str) -> str:
         return text
     initial_len = len(text)
     text = strip_meta_and_signature(text)
+    text = strip_years_opener(text)
     text = strip_stack_dump(text)
     text = strip_weak_ending(text)
     text = normalize_punctuation(text)
@@ -213,6 +305,7 @@ def postprocess_letter(text: str) -> str:
 __all__ = [
     "postprocess_letter",
     "strip_meta_and_signature",
+    "strip_years_opener",
     "strip_stack_dump",
     "strip_weak_ending",
     "normalize_punctuation",
