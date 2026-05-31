@@ -4,15 +4,31 @@ Receives Analyzer's selections + opener pool from CanonicalFacts and
 produces the letter. Two modes:
 
 - **standard** (confidence >= threshold): two paragraphs, second responds
-  to the vacancy's hook_phrase.
+to the vacancy's hook_phrase.
 - **universal** (confidence < threshold): one tightened paragraph, no
-  aggressive hook — generic letter to avoid forcing a bad fit.
+aggressive hook — generic letter to avoid forcing a bad fit.
+
+v4: Removed the "число лет ... как в шаблоне" instruction from both system
+prompts — this was the dominant source of the canned "3+ года коммерческой
+Flutter-разработки" opener leaking into unrelated vacancies. Openers are
+now anchored on selected_project + its top achievement; years-of-experience
+phrasing is explicitly forbidden in the opener and discouraged elsewhere.
 """
 
 from __future__ import annotations
 
 import json
 from typing import Any, Dict, List, Optional
+
+
+_NO_YEARS_OPENER_RULES = """\
+ЗАПРЕТЫ ПЕРВОГО ПРЕДЛОЖЕНИЯ (после приветствия)
+- ЗАПРЕЩЕНО начинать с количества лет опыта. Нельзя писать «X лет», «X+ года», «X+ лет», «более X лет», «свыше X лет», «больше X лет», «X-летний опыт», «опыт N+ лет», «N+ years», «свыше двух/трёх/пяти лет» и любые синонимы.
+- ЗАПРЕЩЕНО начинать с фраз «Я Flutter-разработчик с N+ лет», «За X+ лет», «У меня X лет опыта», «Имею X+ лет опыта», «N+ года коммерческой разработки» и любых их вариаций.
+- ЗАПРЕЩЕНО упоминать общий стаж работы и количество лет опыта В ЛЮБОМ месте письма, даже если это число есть в selected_numbers.
+- Первое предложение ДОЛЖНО опираться на selected_project и его конкретное достижение (например: «В Food One переработал авторизацию через Cubit и расширил бонусную систему, затронув 33 файла приложения.»).
+- Если в openers есть готовый шаблон, используй ЕГО смысл, не вставляй годы.
+"""
 
 
 WRITER_SYSTEM_STANDARD = """\
@@ -22,8 +38,8 @@ WRITER_SYSTEM_STANDARD = """\
 - Язык: русский. Технические термины (Flutter, BLoC, gRPC, JWT, REST, Web, iOS, Android, Clean Architecture, Firebase, API) пишутся латиницей.
 - Длина: 100–130 слов, без подписи.
 - Ровно два абзаца, разделённых пустой строкой.
-  Абзац 1 (3–4 предложения): кто ты + selected_project + 2–3 факта из selected_achievements/selected_numbers.
-  Абзац 2 (2–3 предложения): одно органичное упоминание hook_phrase и мост к опыту.
+Абзац 1 (3–4 предложения): кто ты + selected_project + 2–3 факта из selected_achievements/selected_numbers.
+Абзац 2 (2–3 предложения): одно органичное упоминание hook_phrase и мост к опыту.
 
 ИСТОЧНИК ФАКТОВ
 - selected_numbers — единственный источник чисел для письма.
@@ -37,8 +53,11 @@ WRITER_SYSTEM_STANDARD = """\
 - Если selected_project выбран один, всё письмо должно быть только про этот проект.
 - ЗАПРЕЩЕНО употреблять: финтех, банковские транзакции, международные платежи, сотни/тысячи/миллионы пользователей, high-load, production-нагрузка — если этих слов нет в selected_achievements.
 
-СТАРТ
-- Используй ОДИН из предложенных openers (можешь адаптировать порядок слов, но число лет и общая структура — как в шаблоне).
+ОТКРЫВАЮЩЕЕ ПРЕДЛОЖЕНИЕ (СТАРТ)
+- Используй ОДИН из предложенных openers по смыслу: бери из него selected_project, компанию, индустрию и top achievement — но переформулируй естественно под вакансию. Английские названия компаний и проектов сохраняй как есть.
+- Опенер должен сразу называть конкретный проект и конкретное достижение из него — это «крючок» для рекрутера.
+
+""" + _NO_YEARS_OPENER_RULES + """\
 
 СТИЛЬ
 - Активные глаголы: спроектировал, реализовал, настроил, переработал, внедрил.
@@ -73,8 +92,11 @@ WRITER_SYSTEM_UNIVERSAL = """\
 - Названия технологий — ТОЛЬКО из allowed_tech.
 - ЗАПРЕЩЕНО: финтех, банковские транзакции, сотни/тысячи пользователей, high-load — если их нет в selected_achievements.
 
-СТАРТ
-- Один из предложенных openers (можно адаптировать).
+ОТКРЫВАЮЩЕЕ ПРЕДЛОЖЕНИЕ (СТАРТ)
+- Используй ОДИН из предложенных openers по смыслу — это generic role-anchored шаблоны без привязки к годам.
+- Можно адаптировать формулировку, но не вставляй годы.
+
+""" + _NO_YEARS_OPENER_RULES + """\
 
 СТИЛЬ
 - Активные глаголы. Без штампов «Готов применить», «Буду рад обсудить».
@@ -90,32 +112,47 @@ WRITER_SYSTEM_UNIVERSAL = """\
 
 
 def build_writer_user(
-    analyzer_json: Dict[str, Any],
-    canonical_facts_brief: Dict[str, Any],
-    opener_pool: List[str],
-    *,
-    used_starts: Optional[List[str]] = None,
-    feedback: Optional[str] = None,
+  analyzer_json: Dict[str, Any],
+  canonical_facts_brief: Dict[str, Any],
+  opener_pool: List[str],
+  *,
+  used_starts: Optional[List[str]] = None,
+  feedback: Optional[str] = None,
 ) -> str:
-    """Build a compact, low-leakage user prompt for the Writer.
+  """Build a compact, low-leakage user prompt for the Writer.
 
-    IMPORTANT: We avoid dumping large JSON blobs and internal labels into the
-    prompt ("CANONICAL FACTS", etc.), because some models tend to echo them
-    back as meta-reasoning instead of producing the final letter.
-    """
+  IMPORTANT: We avoid dumping large JSON blobs and internal labels into the
+  prompt ("CANONICAL FACTS", etc.), because some models tend to echo them
+  back as meta-reasoning instead of producing the final letter.
 
-    company = analyzer_json.get("company_name") or analyzer_json.get("company") or ""
-    hook = analyzer_json.get("hook_phrase") or ""
-    
-    greeting = f"Здравствуйте, {company}!" if company else "Здравствуйте!"
+  v4: opener_pool is now achievement-anchored (see opener_pool.py). We
+  surface it as the primary opener guidance and re-state the no-years
+  rule directly in the user prompt to keep the LLM honest under
+  VACANCY_CONTEXT pressure.
+  """
 
-    return f"""=== ВАКАНСИЯ ===
+  company = analyzer_json.get("company_name") or analyzer_json.get("company") or ""
+  hook = analyzer_json.get("hook_phrase") or ""
+
+  greeting = f"Здравствуйте, {company}!" if company else "Здравствуйте!"
+
+  openers_block = "\n".join(f"- {o}" for o in (opener_pool or [])) or "- (нет — придумай свой опенер на основе selected_project и его top achievement, но БЕЗ упоминания количества лет опыта)"
+
+  feedback_block = ""
+  if feedback:
+      feedback_block = f"\n=== ОБРАТНАЯ СВЯЗЬ ОТ ВАЛИДАТОРА (исправь) ===\n{feedback}\n"
+
+  used_block = ""
+  if used_starts:
+      used_block = "\n=== УЖЕ ИСПОЛЬЗОВАННЫЕ ОПЕНЕРЫ (не повторяй) ===\n" + "\n".join(f"- {s}" for s in used_starts) + "\n"
+
+  return f"""=== ВАКАНСИЯ ===
 {json.dumps(analyzer_json, ensure_ascii=False, indent=2)}
 
 === ГЛАВНОЕ ТРЕБОВАНИЕ ВАКАНСИИ (ОБЯЗАТЕЛЬНО ОТРАЗИТЬ) ===
 {hook}
 
-ТВОЁ ПИСЬМО ДОЛЖНО СОДЕРЖАТЬ ПРЕДЛОЖЕНИЕ, КОТОРОЕ НАПРЯМУЮ ОТВЕЧАЕТ НА ЭТО ТРЕБОВАНИЕ — желательно в первом содержательном абзаце.
+ТВОЁ ПИСЬМО ДОЛЖНО СОДЕРЖАТЬ ПРЕДЛОЖЕНИЕ, КОТОРОЕ НАПРЯМУЮ ОТВЕЧАЕТ НА ЭТО ТРЕБОВАНИЕ — желательно во втором абзаце.
 
 === ПРИВЕТСТВИЕ (используй РОВНО эту строку) ===
 {greeting}
@@ -123,16 +160,20 @@ def build_writer_user(
 === ФАКТЫ КАНДИДАТА (используй ТОЛЬКО эти) ===
 {json.dumps(canonical_facts_brief, ensure_ascii=False, indent=2)}
 
+=== OPENERS (используй ОДИН из них ПО СМЫСЛУ как первое предложение после приветствия) ===
+{openers_block}
+
+ВАЖНО: первое предложение НЕ ДОЛЖНО содержать «X лет», «X+ года», «X+ лет», «более X лет», «за X+ лет», «опыт N+ лет», «N-летний опыт» и любые синонимы количества лет работы. Опенер строится на конкретном проекте и его достижении.
+{used_block}{feedback_block}
 === ЗАДАЧА ===
 Напиши сопроводительное письмо по правилам из системной инструкции.
-Выбери ОДИН из 4 шаблонов структуры в зависимости от типа вакансии.
-Не используй один и тот же финал из примеров — варьируй.
+Первое предложение — по смыслу одного из openers выше (про selected_project + его top achievement), БЕЗ упоминания количества лет опыта.
 """
 
 
 def select_writer_system(*, universal_mode: bool) -> str:
-    return WRITER_SYSTEM_UNIVERSAL if universal_mode else WRITER_SYSTEM_STANDARD
+  return WRITER_SYSTEM_UNIVERSAL if universal_mode else WRITER_SYSTEM_STANDARD
 
 
-# Backwards compatibility: re-export the v1 constant name so tests can import it.
+# Backwards compatibility: re-export the v1 constant name so existing imports keep working.
 WRITER_SYSTEM = WRITER_SYSTEM_STANDARD
