@@ -2,8 +2,8 @@
 # Values here are also overridable via env vars (LLM_API_KEY, LLM_ENDPOINT, LLM_MODEL).
 llm:
   api_key: "${LLM_API_KEY}"
-  endpoint: "http://localhost:20128/v1/chat/completions"
-  model: "openrouter/owl-alpha"
+  endpoint: "https://api.mistral.ai/v1/chat/completions"
+  model: "mistral-large-latest"
 
   # Tuned per stage inside the pipeline; these are fallback defaults.
   timeout_seconds: 120
@@ -15,12 +15,11 @@ pipeline:
 
   # Per-stage timeout (seconds) for each LLM call. MUST be >= llm.timeout_seconds,
   # else a stage is cut off mid-request (the TimeoutError you saw at 30s).
-  # For slow local models, raise this AND llm.timeout_seconds together.
   stage_timeout: 180
 
   # Hard length bounds (words). Validator will reject outside this range.
-  min_words: 100
-  max_words: 130
+  min_words: 70
+  max_words: 110
 
   # Concurrency for batch generation.
   max_concurrent: 5
