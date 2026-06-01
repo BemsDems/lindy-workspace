@@ -7,6 +7,7 @@ Deterministic rules (regex/string-level, no LLM):
 - forbidden regex patterns (grounded) must not match (regex)
 - no years-of-experience framing in the opener (first 2 sentences)
 - tech tokens outside the global allowlist are flagged
+- anglicisms (calque loanwords) flagged as soft violations
 
 Semantic rules (LLM, T=0, JSON): handled by `prompts/validator.py`.
 """
@@ -42,6 +43,72 @@ BASE_ALLOWED_TECH: Set[str] = {
     "UGC", "proto", "sealed", "wrapper", "wizard", "admin",
     "moderator", "dashboard",
 }
+
+
+# Anglicisms — Cyrillic calque loanwords that should be replaced with native
+# Russian equivalents or with the Latin technical term. These are detected as
+# SOFT violations (don't block the letter, but flagged for repair).
+#
+# Format: regex pattern (covers common Russian inflectional endings) -> replacement hint.
+# Patterns match whole words (word boundaries) and are case-insensitive.
+#
+# Latin technical terms (Flutter, BLoC, gRPC, API, REST, SDK) are NOT anglicisms —
+# they're standard transliterations in Russian tech writing. We only flag
+# Cyrillic-spelled calques that have natural Russian equivalents.
+ANGLICISMS: Dict[str, str] = {
+    # Pipeline/process
+    r"\bпайплайн\w*": "процесс сборки / pipeline (латиницей)",
+    r"\bпайплейн\w*": "процесс сборки / pipeline (латиницей)",
+    # User
+    r"\bюзер\w*": "пользователь",
+    r"\bюзеров\b": "пользователей",
+    # Commit/push
+    r"\bкоммит\w*": "делать коммиты / фиксировать изменения",
+    r"\bзакоммит\w*": "зафиксировать в коммите",
+    r"\bпуш\w*(?<!ка)\b": "отправлять в репозиторий",
+    # Meetup/feature/standup
+    r"\bмитап\w*": "митап (латиницей: meetup) / встреча сообщества",
+    r"\bфич\w*(?<!а)\b": "функция / возможность",
+    r"\bфича\b": "функция / возможность",
+    r"\bфичи\b": "функции / возможности",
+    r"\bстендап\w*": "ежедневная встреча / standup (латиницей)",
+    # Stakeholder/roadmap
+    r"\bстейкхолдер\w*": "заказчик / заинтересованное лицо",
+    r"\bроадмап\w*": "план развития / roadmap (латиницей)",
+    r"\bроудмап\w*": "план развития / roadmap (латиницей)",
+    # Approve/check/debug/release/fix verbs
+    r"\bапрув\w*": "согласовать / утвердить",
+    r"\bчекать\b": "проверять",
+    r"\bпрочекать\b": "проверить",
+    r"\bдебажить\b": "отлаживать",
+    r"\bотдебажить\b": "отладить",
+    r"\bзадебажить\b": "отладить",
+    r"\bрелизить\b": "выпускать релиз",
+    r"\bзарелизить\b": "выпустить релиз",
+    r"\bфиксить\b": "исправлять",
+    r"\bпофиксить\b": "исправить",
+    r"\bзафиксить\b": "исправить",
+    # Hook/scope (when written in Cyrillic — Latin "hook"/"scope" stays)
+    r"\bхук\b": "обработчик / hook (латиницей)",
+    r"\bхуки\b": "обработчики / hooks (латиницей)",
+    r"\bскоуп\w*": "область / scope (латиницей)",
+    r"\bскоп\w*": "область / scope (латиницей)",
+    # Other common calques
+    r"\bкейс\w*(?<!ы)\b": "случай / пример",
+    r"\bтаска\b": "задача",
+    r"\bтаски\b": "задачи",
+    r"\bтаску\b": "задачу",
+    r"\bтасок\b": "задач",
+    r"\bворкфлоу\w*": "рабочий процесс / workflow (латиницей)",
+    r"\bлайв\w*(?<!ный)\b": "живой / в реальном времени",
+}
+
+
+# Pre-compile anglicism patterns once at module import.
+_ANGLICISM_PATTERNS: List[tuple[re.Pattern, str]] = [
+    (re.compile(pattern, re.IGNORECASE), hint)
+    for pattern, hint in ANGLICISMS.items()
+]
 
 
 @dataclass
@@ -101,7 +168,7 @@ _NUMBER_RE = re.compile(r"(?<!\w)(\d[\d\s.,]{0,12}\d|\d)\+?(?!\w)")
 _YEARS_RE = re.compile(
     r"(?i)\b(\d+\+?|один|два|три|четыре|пять|шесть|семь|восемь|девять|десять)"
     r"\s*(?:\+\s*)?"
-    r"(год(?:а|ов)?|лет|г\.?)\b"
+    r"((год(?:а|ов)?|лет|г\.?)\b)"
 )
 
 
@@ -138,6 +205,25 @@ def _extract_tech(text: str, allowed: Set[str]) -> List[str]:
     return found
 
 
+def _detect_anglicisms(text: str) -> List[tuple[str, str]]:
+    """Find Cyrillic-calque anglicisms in the letter.
+
+    Returns a list of (matched_token, fix_hint) tuples. Each unique token
+    is reported once even if it appears multiple times.
+    """
+    seen: Set[str] = set()
+    findings: List[tuple[str, str]] = []
+    for pattern, hint in _ANGLICISM_PATTERNS:
+        for match in pattern.finditer(text):
+            token = match.group(0)
+            key = token.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            findings.append((token, hint))
+    return findings
+
+
 def validate_deterministic(
     letter: str,
     *,
@@ -161,14 +247,14 @@ def validate_deterministic(
             rule="word_count_too_low",
             severity="hard",
             evidence=f"{word_count} слов (минимум {min_words})",
-            fix_hint=f"Расширь содержание до {min_words}-{max_words} слов, добавив 1-2 конкретных факта о проекте.",
+            fix_hint=f"Расширь содержание до {min_words}-{max_words} слов, добавь 1-2 конкретных факта о проекте.",
         ))
     elif word_count > max_words:
         violations.append(Violation(
             rule="word_count_too_high",
             severity="hard",
             evidence=f"{word_count} слов (максимум {max_words})",
-            fix_hint=f"Сократи до {min_words}-{max_words} слов, убрав общие фразы.",
+            fix_hint=f"Сократи до {min_words}-{max_words} слов, убери общие фразы.",
         ))
 
     # 2. Numbers — every number in the letter must be in the whitelist.
@@ -186,7 +272,7 @@ def validate_deterministic(
             violations.append(Violation(
                 rule="invented_number",
                 severity="hard",
-                evidence=f"число '{token}' отсутствует в whitelist",
+                evidence=f"Число '{token}' отсутствует в whitelist",
                 fix_hint=f"Удали '{token}' или замени на число из allowed_numbers: {sorted(allowed_set)[:8]}",
             ))
 
@@ -219,7 +305,7 @@ def validate_deterministic(
                 evidence=f"запрещённый шаблон '{matched_text}' (нет в резюме)",
                 fix_hint=(
                     f"Убери '{matched_text}' — это выдуманный факт "
-                    f"(процент эффективности / масштаб аудитории / конкретное время), "
+                    f"(процент эффективности / маштаба аудитории / конкретное время), "
                     f"которого нет в резюме."
                 ),
             ))
@@ -239,6 +325,17 @@ def validate_deterministic(
     # 5. Tech tokens — informational only (we record what's used, no hard fail in universal mode).
     combined_allowed: Set[str] = set(BASE_ALLOWED_TECH) | set(facts.allowed_tech)
     used_tech = _extract_tech(text, combined_allowed)
+
+    # 6. Anglicisms — Cyrillic-spelled calque loanwords (SOFT severity).
+    # We don't block the letter on these, but they trigger repair so the
+    # writer can replace them with native equivalents or Latin technical terms.
+    for token, hint in _detect_anglicisms(text):
+        violations.append(Violation(
+            rule="anglicism",
+            severity="soft",
+            evidence=f"англицизм '{token}'",
+            fix_hint=f"Замени '{token}' на: {hint}",
+        ))
 
     passed = not any(v.severity == "hard" for v in violations)
 
@@ -328,6 +425,7 @@ async def validate_semantic(
 
 __all__ = [
     "BASE_ALLOWED_TECH",
+    "ANGLICISMS",
     "Violation",
     "ValidationResult",
     "validate_deterministic",
