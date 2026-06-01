@@ -1,1 +1,252 @@
-__FETCH_AND_PATCH_REQUIRED__
+# Personal Info
+personal:
+  name: "Дуков Тамерлан"
+  birth_date: "2003-01-04"
+  age: 23
+  gender: "male"
+  location: "Нальчик"
+  citizenship: "Россия"
+  relocation: false
+  business_trips: "редкие"
+
+# Contacts
+contacts:
+  phone: "+7 (964) 034-30-55"
+  email: "avapa2015@yandex.ru"
+  telegram: "@jaqFresco"
+  telegram_url: "https://t.me/jaqFresco"
+
+# Desired Position
+desired:
+  title: "Flutter developer"
+  specializations:
+    - "Программист, разработчик"
+  employment_type: "полная занятость"
+  work_format:
+    - "удалённо"
+    - "на месте работодателя"
+    - "гибрид"
+  commute_time: "не имеет значения"
+
+# Professional Summary
+summary: |
+  Flutter-разработчик с опытом более 3-х лет коммерческой разработки.
+  Работал как с legacy-кодом (полный рефакторинг модулей), так и с проектами
+  с нуля (архитектура, инфраструктура, интеграции). В отдельных задачах
+  выступал ответственным за технические решения.
+
+# Skills
+skills:
+  primary:
+    - Dart
+    - Flutter
+    - BLoC
+    - Cubit
+    - Clean Architecture
+    - REST API
+    - gRPC
+  secondary:
+    - Firebase
+    - FCM
+    - JWT
+    - Secure Storage
+    - WebView
+    - Freezed
+    - Auto Route
+    - Deep Links
+    - SQLite
+    - Drift
+    - Sentry
+  soft:
+    - Git
+    - GitHub
+    - GitLab
+    - Jira
+    - Figma
+    - Agile
+    - CI/CD
+  architecture:
+    - Clean Architecture
+    - MVVM
+    - MVC
+    - Feature-based Architecture
+    - Layered Architecture
+  principles:
+    - SOLID
+    - DRY
+    - ООП
+
+# Experience
+experience:
+  total_years: 3
+  total_months: 2
+  positions:
+    - title: "Flutter-разработчик"
+      company: "OtherCode"
+      company_url: "https://othercode.ru/"
+      industry: "Информационные технологии, системная интеграция, интернет"
+      period_start: "2025-02"
+      period_end: "2025-10"
+      duration_months: 9
+      current: false
+      projects:
+        - name: "OtherMark"
+          description: "Внутренняя B2B/ERP-система для работы с маркировкой товаров в системе «Честный ЗНАК»"
+          role: "Flutter-разработчик в команде (Flutter + backend + тимлид + специалист)"
+          tech_stack:
+            - Flutter
+            - Dart
+            - BLoC
+            - Cubit
+            - Clean Architecture
+            - GetIt
+            - Injectable
+            - gRPC
+            - Protobuf
+          achievements:
+            - "Спроектировал архитектуру приложения на Clean Architecture с DI, настроил gRPC-клиент и автогенерацию Dart-кода"
+            - "Реализовал 5 ключевых B2B-модулей, на 15% быстрее типичных решений"
+            - "Разработал внутреннюю дизайн-систему, что ускорило разработку новых экранов и улучшило консистентность интерфейса"
+            - "Внедрил валидацию российских бизнес‑форматов (ИНН, GLN, КПП, OMS UUID), что сократило ошибки ввода на 40%"
+            - "Оптимизировал запросы к gRPC‑серверу: уменьшил время отклика на 30% и потребление памяти на 25%"
+        - name: "DIOM"
+          description: "Социальная сеть (аналог Boosty и Telegram) с сообществами, каналами и постами по подписке"
+          role: "Поддержка и развитие приложения в команде (2 Flutter + 2 backend + тимлид + тестировщик)"
+          tech_stack:
+            - Flutter
+            - Dart
+            - BLoC
+            - Cubit
+            - Clean Architecture
+            - Dio
+            - WebView
+            - JWT
+            - Secure Storage
+          achievements:
+            - "Переработал auth и profile модули с 4 способами авторизации (Email, Phone/SMS, VK ID, Yandex ID), восстановлением пароля и OTP‑сценариями"
+            - "Дорабатывал сообщества, каналы, посты, комментарии. Реализовал систему доступов для 6 ролей с назначением модераторов"
+            - "Улучшил работу с медиа: crop изображений, генерация avatar‑заглушек, 20+ переиспользуемых UI‑компонентов"
+            - "Добавил обработку отсутствия интернета и retry‑сценарии в 5 критических flow, что значительно повысило стабильность приложения"
+    - title: "Flutter разработчик"
+      company: "KMGT"
+      industry: "Информационные технологии"
+      period_start: "2023-07"
+      period_end: "2025-01"
+      duration_months: 19
+      current: false
+      projects:
+        - name: "ЭталонИнвест"
+          description: "Мобильное приложение для строительной компании с личными кабинетами покупателей и риелторов"
+          url: "https://apps.apple.com/ru/app/etalon-invest/id6754565558"
+          role: "Самостоятельная разработка от старта до релиза"
+          tech_stack:
+            - Flutter
+            - BLoC
+            - GetIt
+            - WebView
+            - JWT
+            - FCM
+            - Secure Storage
+          achievements:
+            - "Заложил архитектуру на BLoC + GetIt, реализовал личные кабинеты для покупателей и риелторов"
+            - "Перевёл приложение в формат webview‑only, удалил 11 000+ строк кода, упростил поддержку"
+            - "Настроил двустороннюю связь WebView ↔ Flutter с пробросом Firebase‑токенов через JS Injection"
+            - "Исправил платформенные баги WebView (автоскролл на Android), внедрил pull‑to‑refresh"
+
+    - title: "Flutter разработчик"
+      company: "Integra"
+      industry: "Стартап"
+      period_start: "2022-09"
+      period_end: "2023-06"
+      duration_months: 10
+      current: false
+      projects:
+        - name: "Integra"
+          description: "Мобильное приложение для персонального планирования задач, заметок, контактов и календаря с голосовым вводом, push-уведомлениями и синхронизацией с сервером"
+          url: "https://apps.apple.com/ru/app/integra/id1563253431"
+          role: "Рефакторинг MVP-кодовой базы в команде из 11 разработчиков"
+          tech_stack:
+            - Flutter
+            - Dart
+            - BLoC
+            - Cubit
+            - Provider
+            - Freezed
+            - RxDart
+            - http
+            - Drift
+            - sqflite
+            - SharedPreferences
+            - Firebase Messaging
+            - Local Notifications
+            - Sentry
+            - Speech-to-Text
+            - connectivity_plus
+          achievements:
+            - "Участвовал в рефакторинге 6 модулей приложения — авторизация, задачи, заметки, главный экран, контакты, календарь"
+            - "Разработал модуль авторизации на AuthCubit с freezed-состояниями, обработкой сетевых ошибок через ResponseState и логированием в Sentry"
+            - "Спроектировал sealed-обёртку ответов API (ResponseState) и централизованную обработку сетевых ошибок в Repository"
+            - "Объединил 3 разрозненных BLoC-модуля задач в один TaskBloc, сократив дублирование"
+            - "Декомпозировал крупные экраны (заметки, главная) на переиспользуемые компоненты со Scope-based DI"
+            - "Реализовал кастомные жесты: drag&drop переноса задач между датами и swipe-возврат через RawGestureDetector"
+            - "Разработал функцию быстрого создания задач с помощью голосового ввода (Speech-to-Text)"
+            - "Спроектировал собственное singleton-решение для responsive UI без сторонних библиотек и применил его глобально через textScaleFactor для поддержки разных разрешений экранов"
+            - "За период работы внёс 77 коммитов, ~75% из них — рефакторинг архитектуры"
+        - name: "Food One"
+          description: "Мобильное приложение сервиса доставки еды"
+          url: "https://play.google.com/store/apps/details?id=food.one.delivery"
+          role: "Поддержка и развитие production‑приложения"
+          tech_stack:
+            - Flutter
+            - BLoC
+            - GetIt
+            - Injectable
+            - Yandex MapKit
+            - Firebase
+            - Branch SDK
+          achievements:
+            - "Переписал модуль авторизации с СМС‑верификацией, регистрацией и восстановлением пароля"
+            - "Дорабатывал корзину и оформление заказа с валидацией, доставкой/самовывозом, бонусами и cashback"
+            - "Реализовал интеграцию с Yandex MapKit и геолокацией для определения города пользователя"
+            - "Обновил проект с Flutter 3.16.7 до 3.29.0, настроил Deep Links (Branch SDK), довёл до релиза"
+
+# Education
+education:
+  - degree: "Бакалавр"
+    institution: "Кабардино‑Балкарский государственный университет им. Х.М. Бербекова"
+    location: "Нальчик"
+    faculty: "Институт искусственного интеллекта и ЦТ"
+    specialization: "Информатика и вычислительная техника"
+    year_start: 2022
+    year_end: 2026
+    status: "в процессе"
+  - degree: "Среднее специальное"
+    institution: "Колледж информационных технологий и экономики"
+    specialization: "Компьютерные сети"
+    year_end: 2022
+
+# Languages
+languages:
+  - name: "Русский"
+    level: "Родной"
+    level_code: "C2"
+  - name: "Английский"
+    level: "A2 — Элементарный"
+    level_code: "A2"
+
+# Additional
+additional:
+  github: null
+  portfolio: null
+  certifications: []
+
+interests:
+  - "Архитектура мобильных приложений"
+  - "Clean Code"
+  - "Flutter best practices"
+
+# Guardrails used by the approval flow.
+restrictions:
+  - "не указывать несуществующий коммерческий опыт"
+  - "не завышать уровень английского"
+  - "не обещать релокацию, если она не указана"
