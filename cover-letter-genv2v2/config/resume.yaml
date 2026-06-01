@@ -7,11 +7,12 @@ personal:
   citizenship: Россия
   relocation: false
   business_trips: редкие
-contacts:
-  phone: +7 (964) 034-30-55
-  email: avapa2015@yandex.ru
-  telegram: '@jaqFresco'
-  telegram_url: https://t.me/jaqFresco
+  contacts:
+    phone: +7 (964) 034-30-55
+    email: avapa2015@yandex.ru
+    telegram: '@jaqFresco'
+    telegram_url: https://t.me/jaqFresco
+
 desired:
   title: Flutter developer
   specializations:
@@ -22,11 +23,13 @@ desired:
     - на месте работодателя
     - гибрид
   commute_time: не имеет значения
+
 summary: |
   Flutter-разработчик с опытом более 3-х лет коммерческой разработки.
   Работал как с legacy-кодом (полный рефакторинг модулей), так и с проектами
   с нуля (архитектура, инфраструктура, интеграции). В отдельных задачах
   выступал ответственным за технические решения.
+
 skills:
   primary:
     - Dart
@@ -66,6 +69,7 @@ skills:
     - SOLID
     - DRY
     - ООП
+
 experience:
   total_years: 3
   total_months: 2
@@ -81,7 +85,7 @@ experience:
       projects:
         - name: OtherMark
           description: Внутренняя B2B/ERP-система для работы с маркировкой товаров в системе «Честный ЗНАК»
-          role: Flutter-разработчик в команде (Flutter + backend + тимлид + специалист)
+          role: Самостоятельная разработка приложения в команде (Flutter + backend + продукт)
           tech_stack:
             - Flutter
             - Dart
@@ -94,10 +98,15 @@ experience:
             - Protobuf
           achievements:
             - Спроектировал архитектуру приложения на Clean Architecture с DI, настроил gRPC-клиент и автогенерацию Dart-кода
-            - Реализовал 5 ключевых B2B-модулей, на 15% быстрее типичных решений
+            - Реализовал 7 ключевых B2B-модулей
             - Разработал внутреннюю дизайн-систему, что ускорило разработку новых экранов и улучшило консистентность интерфейса
-            - Внедрил валидацию российских бизнес‑форматов (ИНН, GLN, КПП, OMS UUID), что сократило ошибки ввода на 40%
-            - 'Оптимизировал запросы к gRPC‑серверу: уменьшил время отклика на 30% и потребление памяти на 25%'
+            - 'Внедрил валидацию российских бизнес-форматов (ИНН, GLN, КПП, OMS UUID, GTIN) с контрольными суммами — 13 валидаторов в едином модуле.'
+            - 'Реализовал gRPC-инфраструктуру: Auth-interceptor с Bearer-токенами и retry на unauthenticated, Logger-interceptor со structured logging, ErrorMapper для маппинга 11 типов gRPC StatusCode в sealed Failure (zero-throw архитектура через fpdart Either).'
+            - Запустил проект с нуля и развил кодовую базу — 215 новых .dart-файлов, 13 897 строк handwritten кода, 9 репозиториев, 18 domain-сущностей, 31 mapper, 14 Bloc/Cubit-классов.
+            - 'Разработал универсальную B2B-таблицу DataListWidget (211 строк): expandable rows, адаптивная ширина колонок через flex, runtime-валидация конфигурации — переиспользуется во всех табличных экранах.'
+            - 'Реализовал многошаговый мастер создания задания: 4 шага, 7 компонентов (~806 строк) с пошаговой валидацией и сохранением промежуточного состояния.'
+            - 'Реализовал импорт кодов маркировки из .txt/.csv через FilePicker: парсинг, валидация, добавление в текущее задание — экономит ручной ввод сотен кодов.'
+            - 'Спроектировал AuthGuard с async state waiting через stream.firstWhere — проверка состояния авторизации и заполненности профиля до навигации, без race-conditions на cold start.'
         - name: DIOM
           description: Социальная сеть (аналог Boosty и Telegram) с сообществами, каналами и постами по подписке
           role: Поддержка и развитие приложения в команде (2 Flutter + 2 backend + тимлид)
@@ -234,6 +243,7 @@ experience:
             - Разработал функцию быстрого создания задач с помощью голосового ввода (Speech-to-Text).
             - Спроектировал собственное singleton-решение для responsive UI без сторонних библиотек и применил его глобально через textScaleFactor для поддержки разных разрешений экранов.
             - За период работы внёс 77 коммитов, ~75% из них — рефакторинг архитектуры.
+
 education:
   - degree: Бакалавр
     institution: Кабардино‑Балкарский государственный университет им. Х.М. Бербекова
@@ -247,6 +257,7 @@ education:
     institution: Колледж информационных технологий и экономики
     specialization: Компьютерные сети
     year_end: 2022
+
 languages:
   - name: Русский
     level: Родной
@@ -254,6 +265,7 @@ languages:
   - name: Английский
     level: A2 — Элементарный
     level_code: A2
+
 additional:
   github: null
   portfolio: null
