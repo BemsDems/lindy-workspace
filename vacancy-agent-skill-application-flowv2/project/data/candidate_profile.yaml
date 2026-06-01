@@ -198,17 +198,25 @@ experience:
           role: "Поддержка и развитие production‑приложения"
           tech_stack:
             - Flutter
+            - Dart
             - BLoC
-            - GetIt
-            - Injectable
+            - Cubit
+            - Dio
+            - Firebase Messaging
             - Yandex MapKit
-            - Firebase
-            - Branch SDK
+            - FlutterSecureStorage
+            - flutter_local_notifications
+            - flutter_branch_sdk
+            - FVM
           achievements:
-            - "Переписал модуль авторизации с СМС‑верификацией, регистрацией и восстановлением пароля"
-            - "Дорабатывал корзину и оформление заказа с валидацией, доставкой/самовывозом, бонусами и cashback"
-            - "Реализовал интеграцию с Yandex MapKit и геолокацией для определения города пользователя"
-            - "Обновил проект с Flutter 3.16.7 до 3.29.0, настроил Deep Links (Branch SDK), довёл до релиза"
+            - "Полностью переписал модуль авторизации: AuthenticationCubit с обработкой DioError, rate-limit 429 (tooManyAttemptsError), SMS-верификация через Pinput с таймером и retry, восстановление пароля. Удалил старый модуль autorization, добавил 16 новых .dart-файлов"
+            - "Реализовал восстановление пароля с отдельным ForgotPasswordCubit, ForgotPasswordRepository и двумя экранами верификации"
+            - "Спроектировал 7 переиспользуемых виджетов авторизации (~527 строк): sms_verification_widget, phone_text_field с маской, password_text_field, custom_app_bar, extended_text_field, consent_checkbox, phone_number_formatter"
+            - "Расширил кэшбэк-систему: переписал BonusesRepository на новый endpoint /client/categories/get, расширил на restaurant, basket, restaurants_list — затронуто 33 файла"
+            - "Провёл миграцию Flutter 3.0.2 → 3.22.2 → 3.29.0, обновил 13+ пакетов (flutter_bloc 7→9, dio 4→5, firebase_messaging 14→15, yandex_mapkit 3→4, flutter_branch_sdk 6→8), починил breaking changes в card_loading, BlocProvider, DioError, FCM init"
+            - "Реализовал авто-определение категории при скролле меню ресторана через InViewNotifierCustomScrollView и AutoScrollController с синхронизацией двух scroll-контроллеров"
+            - "Подготовил 13+ релизов в App Store и Google Play, настройка Apple Connect, конфигурация signing, permissions (location), Gradle, Podfile, Info.plist"
+            - "Дорабатывал корзину и оформление заказа: валидация адреса, форма комментария, overflow текста, оплата бонусами, доставка/самовывоз"
 
 # Education
 education:
