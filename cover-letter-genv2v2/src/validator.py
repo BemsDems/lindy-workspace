@@ -10,6 +10,15 @@ Deterministic rules (regex/string-level, no LLM):
 - anglicisms (calque loanwords) flagged as soft violations
 
 Semantic rules (LLM, T=0, JSON): handled by `prompts/validator.py`.
+
+Severity contract (uniform across deterministic + semantic):
+- "hard" violations -> passed=False, pipeline retries via repair pass.
+- "soft" violations -> passed=True, surfaced in result.violations for
+  diagnostics but do NOT block the letter. A letter that breaks no hard
+  rules is acceptable even if it carries soft remarks (cliches,
+  anglicisms, weak phrasing). Repair MAY still receive the feedback,
+  but pipeline.py decides separately whether to invoke repair on a
+  passed letter.
 """
 
 from __future__ import annotations
@@ -150,7 +159,7 @@ class ValidationResult:
         lines: List[str] = []
         for v in self.violations:
             lines.append(
-                f"- [{v.severity}] {v.rule}: {v.evidence}\n  -> {v.fix_hint}"
+                f"- [{v.severity}] {v.rule}: {v.evidence}\n    -> {v.fix_hint}"
             )
         return "Нарушения, которые надо исправить:\n" + "\n".join(lines)
 
@@ -374,9 +383,19 @@ async def validate_semantic(
 ) -> ValidationResult:
     """Run the LLM-based semantic validator. Returns a ValidationResult.
 
-    On any error (LLM failure, malformed JSON), returns passed=True with an
-    empty violations list — the deterministic validator already caught the
-    hard rules, and we don't want a flaky semantic pass to block the letter.
+    Severity contract: a letter passes semantic validation iff it has
+    NO hard violations. Soft violations (cliches, weak phrasing,
+    invented_facts flagged as soft, etc.) are still returned in
+    `result.violations` so callers can surface them, but they do NOT
+    block the letter or force a retry. This mirrors the deterministic
+    validator's behavior and prevents the prior regression where letters
+    that broke zero hard rules were killed after 3 retries because the
+    LLM tagged a single soft cliche.
+
+    On any error (LLM failure, malformed JSON), returns passed=True with
+    an empty violations list — the deterministic validator already caught
+    the hard rules, and we don't want a flaky semantic pass to block the
+    letter.
     """
 
     user_prompt = build_validator_user(letter, analyzer_json, list(allowed_numbers))
@@ -404,7 +423,6 @@ async def validate_semantic(
         logger.warning("Semantic validator returned unexpected type: %s", type(raw).__name__)
         return ValidationResult(passed=True, violations=[], word_count=len(letter.split()))
 
-    passed_flag = bool(raw.get("passed", False))
     raw_violations = raw.get("violations") or []
     violations: List[Violation] = []
     for item in raw_violations:
@@ -412,9 +430,12 @@ async def validate_semantic(
         if v is not None:
             violations.append(v)
 
-    # If the model said passed=true but emitted violations, trust the violations list.
-    if violations:
-        passed_flag = False
+    # Severity contract: pass iff NO hard violations.
+    # We deliberately IGNORE the model's `passed` boolean here — models often
+    # set passed=false because they emitted a soft remark, which is exactly
+    # the regression this rewrite prevents.
+    has_hard = any(v.severity == "hard" for v in violations)
+    passed_flag = not has_hard
 
     return ValidationResult(
         passed=passed_flag,
