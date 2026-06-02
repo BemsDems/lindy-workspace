@@ -247,7 +247,7 @@ async def write_letter(
 	feedback: Optional[str] = None,
 	universal_mode: bool = False,
 	temperature: float = 0.4,
-	max_tokens: int = 400,
+	max_tokens: int = 360,
 	two_pass_editing: bool = False,
 	vacancy_title: str = "",
 	vacancy_company: str = "",
@@ -280,7 +280,28 @@ async def write_letter(
 		vacancy_description=vacancy_description,
 		vacancy_requirements=vacancy_requirements or [],
 	)
+
+	# Fix #8: empty-text guard. If the LLM returned nothing (empty string,
+	# whitespace-only, or None), fail loudly with a descriptive error so the
+	# pipeline can surface it via repr(exc) instead of producing a 0-word
+	# letter that silently passes through validation.
+	if not final_text or not str(final_text).strip():
+		raise RuntimeError(
+			"writer produced empty letter (LLM returned no text); "
+			f"universal_mode={universal_mode}, max_tokens={max_tokens}, "
+			f"selected_project={selected_project!r}"
+		)
+
 	stripped = _strip_signature_lines(final_text)
+
+	# Fix #8 (cont.): re-check after stripping in case signature-removal
+	# wiped the whole body (model returned only "С уважением, ...").
+	if not stripped or not stripped.strip():
+		raise RuntimeError(
+			"writer produced empty letter after signature stripping "
+			"(LLM output contained only signature lines)"
+		)
+
 	split = _enforce_paragraph_split(stripped, universal_mode=universal_mode)
 
 	# Python-level guarantee: greeting is always the first line.
@@ -430,12 +451,6 @@ UNIVERSAL режим: 1 плотный абзац 60-90 слов, без агр�
 - «Готов показать архитектуру решения на коротком созвоне.»
 - «Расскажу детали по проекту, который вас заинтересовал.»
 - «Если накоротке созвонимся – покажу код и архитектуру.»
-- «Хотел бы обсудить...»
-- «Этот опыт поможет...»
-- «Этот опыт может быть полезен...»
-- «Смогу быстро вклиниться...»
-- «Буду полезна...»
-(Note: these are examples of live endings, not prescriptive templates)
 
 === ЧЕГО НЕ ДЕЛАТЬ ===
 - Не перечисляй больше 3 технологий подряд.
@@ -573,7 +588,7 @@ async def _final_letter_from_facts(
 	opener_pool: List[str],
 	universal_mode: bool,
 	feedback: Optional[str] = None,
-	max_tokens: int = 400,
+	max_tokens: int = 360,
 	vacancy_title: str = "",
 	vacancy_company: str = "",
 	vacancy_description: str = "",
