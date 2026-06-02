@@ -442,13 +442,13 @@ def _project_achievements(project: object) -> list[str]:
     return []
 
 
-from .project_selector import get_default_selector
-
 def _sanitize_analyzer_result(
     result: Dict[str, Any],
     vacancy: Vacancy,
     facts: CanonicalFacts,
 ) -> Dict[str, Any]:
+    from .project_selector import get_default_selector
+
     selector = get_default_selector()
     llm_selected = str(result.get("selected_project") or "") or None
 

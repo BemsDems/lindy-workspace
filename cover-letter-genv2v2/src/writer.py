@@ -8,7 +8,6 @@ from typing import Any, Dict, List, Optional
 from .facts import CanonicalFacts
 from .llm_client import LLMClient
 from .prompts.opener_pool import select_openers
-from .prompts.writer import build_writer_user, select_writer_system
 
 
 # All Flutter versions that may legitimately appear in audited achievements.
@@ -254,7 +253,6 @@ async def write_letter(
 	vacancy_description: str = "",
 	vacancy_requirements: Optional[List[str]] = None,
 ) -> str:
-	system_prompt = select_writer_system(universal_mode=universal_mode)
 	selected_project = str(analyzer_json.get("selected_project") or "")
 	brief = build_canonical_facts_brief(facts, selected_project)
 	# v2: opener pool now consumes CanonicalFacts + selected_project and
