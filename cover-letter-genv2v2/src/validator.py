@@ -1,82 +1,507 @@
-"""Validator module for cover letter generation.
+"""Deterministic + semantic validation for generated cover letters.
 
-Checks generated cover letters against a set of rules and produces
-structured feedback for the repair pass.
+Deterministic rules (regex/string-level, no LLM):
+- word count in [min_words, max_words]
+- every number token in the letter must be in `allowed_numbers`
+- forbidden claims (grounded against the resume) must not appear (substring)
+- forbidden regex patterns (grounded) must not match (regex)
+- no years-of-experience framing in the opener (first 2 sentences)
+- tech tokens outside the global allowlist are flagged
+- anglicisms (calque loanwords) flagged as soft violations
+
+Semantic rules (LLM, T=0, JSON): handled by `prompts/validator.py`.
+
+Severity contract (uniform across deterministic + semantic):
+- "hard" violations -> passed=False, pipeline retries via repair pass.
+- "soft" violations -> passed=True, surfaced in result.violations for
+diagnostics but do NOT block the letter. A letter that breaks no hard
+rules is acceptable even if it carries soft remarks (cliches,
+anglicisms, weak phrasing). Repair MAY still receive the feedback,
+but pipeline.py decides separately whether to invoke repair on a
+passed letter.
 """
+
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import List, Optional
+import json
+import logging
 import re
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Set
+
+from .facts import CanonicalFacts
+from .llm_client import LLMClient
+from .prompts.validator import VALIDATOR_SYSTEM, build_validator_user
+
+
+logger = logging.getLogger(__name__)
+
+
+# Tech tokens that are always allowed in cover letters (case-insensitive match).
+# These are common, generic terms — specific stack items come from CanonicalFacts.allowed_tech.
+BASE_ALLOWED_TECH: Set[str] = {
+  "Flutter", "Dart", "BLoC", "Cubit", "gRPC", "JWT", "REST", "API",
+  "Web", "iOS", "Android", "Firebase", "FCM", "Clean", "Architecture",
+  "GraphQL", "SQL", "SDK", "OTP", "B2B", "ERP", "CI/CD", "Git",
+  "WebView", "SQLite", "URL", "HTTP", "HTTPS", "UI", "UX",
+  "production", "backend", "frontend", "mobile", "open", "source",
+  "legacy", "deploy", "release", "build", "pipeline", "DI", "ORM",
+  "auth", "profile", "unit", "retry", "flow", "crop", "avatar",
+  "interceptor", "middleware", "token", "refresh", "widget", "state",
+  "real", "time", "real-time", "DTO",
+  "UGC", "proto", "sealed", "wrapper", "wizard", "admin",
+  "moderator", "dashboard",
+}
+
+
+# Anglicisms — Cyrillic calque loanwords that should be replaced with native
+# Russian equivalents or with the Latin technical term. These are detected as
+# SOFT violations (don't block the letter, but flagged for repair).
+#
+# Format: regex pattern (covers common Russian inflectional endings) -> replacement hint.
+# Patterns match whole words (word boundaries) and are case-insensitive.
+#
+# Latin technical terms (Flutter, BLoC, gRPC, API, REST, SDK) are NOT anglicisms —
+# they're standard transliterations in Russian tech writing. We only flag
+# Cyrillic-spelled calques that have natural Russian equivalents.
+ANGLICISMS: Dict[str, str] = {
+  # Pipeline/process
+  r"\bпайплайн\w*": "процесс сборки / pipeline (латиницей)",
+  r"\bпайплейн\w*": "процесс сборки / pipeline (латиницей)",
+  # User
+  r"\bюзер\w*": "пользователь",
+  r"\bюзеров\b": "пользователей",
+  # Commit/push
+  r"\bкоммит\w*": "делать коммиты / фиксировать изменения",
+  r"\bзакоммит\w*": "зафиксировать в коммите",
+  r"\bпуш\w*(?<!ка)\b": "отправлять в репозиторий",
+  # Meetup/feature/standup
+  r"\bмитап\w*": "митап (латиницей: meetup) / встреча сообщества",
+  r"\bфич\w*(?<!а)\b": "функция / возможность",
+  r"\bфича\b": "функция / возможность",
+  r"\bфичи\b": "функции / возможности",
+  r"\bстендап\w*": "ежедневная встреча / standup (латиницей)",
+  # Stakeholder/roadmap
+  r"\bстейкхолдер\w*": "заказчик / заинтересованное лицо",
+  r"\bроадмап\w*": "план развития / roadmap (латиницей)",
+  r"\bроудмап\w*": "план развития / roadmap (латиницей)",
+  # Approve/check/debug/release/fix verbs
+  r"\bапрув\w*": "согласовать / утвердить",
+  r"\bчекать\b": "проверять",
+  r"\bпрочекать\b": "проверить",
+  r"\bдебажить\b": "отлаживать",
+  r"\bотдебажить\b": "отладить",
+  r"\bзадебажить\b": "отладить",
+  r"\bрелизить\b": "выпускать релиз",
+  r"\bзарелизить\b": "выпустить релиз",
+  r"\bфиксить\b": "исправлять",
+  r"\bпофиксить\b": "исправить",
+  r"\bзафиксить\b": "исправить",
+  # Hook/scope (when written in Cyrillic — Latin "hook"/"scope" stays)
+  r"\bхук\b": "обработчик / hook (латиницей)",
+  r"\bхуки\b": "обработчики / hooks (латиницей)",
+  r"\bскоуп\w*": "область / scope (латиницей)",
+  r"\bскоп\w*": "область / scope (латиницей)",
+  # Other common calques
+  r"\bкейс\w*(?<!ы)\b": "случай / пример",
+  r"\bтаска\b": "задача",
+  r"\bтаски\b": "задачи",
+  r"\bтаску\b": "задачу",
+  r"\bтасок\b": "задач",
+  r"\bворкфлоу\w*": "рабочий процесс / workflow (латиницей)",
+  r"\bлайв\w*(?<!ный)\b": "живой / в реальном времени",
+}
+
+
+# Pre-compile anglicism patterns once at module import.
+_ANGLICISM_PATTERNS: List[tuple[re.Pattern, str]] = [
+  (re.compile(pattern, re.IGNORECASE), hint)
+  for pattern, hint in ANGLICISMS.items()
+]
+
+
+# Recognised severity values returned by the semantic validator.
+_VALID_SEVERITIES: Set[str] = {"hard", "soft"}
 
 
 @dataclass
 class Violation:
-    rule: str
-    severity: str  # "error" | "warn"
-    evidence: str
-    fix_hint: str
+  """A single validation failure."""
+
+  rule: str
+  severity: str  # "hard" | "soft"
+  evidence: str
+  fix_hint: str
+
+  def to_dict(self) -> Dict[str, str]:
+      return {
+          "rule": self.rule,
+          "severity": self.severity,
+          "evidence": self.evidence,
+          "fix_hint": self.fix_hint,
+      }
 
 
 @dataclass
 class ValidationResult:
-    violations: List[Violation] = field(default_factory=list)
-    word_count: int = 0
+  """Result of running validation on a letter.
 
-    @property
-    def ok(self) -> bool:
-        return not any(v.severity == "error" for v in self.violations)
+  Fields are intentionally mutable: pipeline.py copies `used_numbers`/`used_tech`
+  from the deterministic result onto the semantic result before returning.
+  """
 
-    def format_feedback(self) -> str:
-        """Human-readable feedback string for the repair pass.
+  passed: bool
+  violations: List[Violation] = field(default_factory=list)
+  word_count: int = 0
+  used_numbers: List[str] = field(default_factory=list)
+  used_tech: List[str] = field(default_factory=list)
 
-        Priority order:
-          1. word_count_too_high — with exact delta and hard CUT imperative.
-          2. forbidden_claim     — with hard DELETE (no synonym) imperative.
-          3. everything else     — standard format.
+  def format_feedback(self) -> str:
+      """Human-readable feedback string for the repair pass."""
+      if not self.violations:
+          return ""
+      lines: List[str] = []
+      for v in self.violations:
+          lines.append(
+              f"- [{v.severity}] {v.rule}: {v.evidence}\n    -> {v.fix_hint}"
+          )
+      return "Нарушения, которые надо исправить:\n" + "\n".join(lines)
 
-        Putting critical constraints first ensures the repair LLM acts on them
-        before softer hints, and doesn't bury the word-count limit.
-        """
-        if not self.violations:
-            return ""
 
-        import re as _re
+# --- Deterministic validation -------------------------------------------------
 
-        word_count_viols = [v for v in self.violations if v.rule == "word_count_too_high"]
-        forbidden_viols  = [v for v in self.violations if v.rule == "forbidden_claim"]
-        other_viols      = [v for v in self.violations
-                            if v.rule not in ("word_count_too_high", "forbidden_claim")]
+# Matches number tokens like "3", "11 000", "11 381", "32 840", "3.0.2",
+# "3+", "10+", "1,3", "2 682". The {0,12} allows multi-thousand numbers with
+# internal whitespace to match as ONE token (previously {0,6} broke "11 381"
+# into ("11", "381") and only the first half was checked against the whitelist).
+_NUMBER_RE = re.compile(r"(?<!\w)(\d[\d\s.,]{0,12}\d|\d)\+?(?!\w)")
 
-        parts: List[str] = []
+# Matches years-of-experience phrases anywhere in a string:
+#   "3+ года", "5 лет", "три года", "три+ года", "3 г.", "3+ г"
+# The numeric/word group already permits an optional '+', so we don't repeat
+# the '+' once more outside the group (the previous regex did that and just
+# fired an unnecessary extra optional match).
+_YEARS_RE = re.compile(
+  r"(?i)\b(\d+\+?|один|два|три|четыре|пять|шесть|семь|восемь|девять|десять)"
+  r"\s+"
+  r"(год(?:а|ов)?|лет|г\.?)\b"
+)
 
-        # --- PRIORITY 1: word count ---
-        for v in word_count_viols:
-            m = _re.search(r"(\d+)\s*слов", v.evidence)
-            current = int(m.group(1)) if m else self.word_count
-            delta = max(current - 110, 1)
-            parts.append(
-                "🔴 КРИТИЧНО — СЛИШКОМ ДЛИННОЕ ПИСЬМО\n"
-                f"   Текущий объём: {current} слов. Лимит: 110 слов. Нужно убрать: {delta} слов.\n"
-                f"   ДЕЙСТВИЕ: СОКРАТИ письмо ровно на {delta} слов. "
-                "Удали вводные обороты, повторы, дублирующиеся детали. "
-                "НЕ добавляй новый текст. НЕ переписывай — только режь.\n"
-                f"   -> {v.fix_hint}"
-            )
 
-        # --- PRIORITY 2: forbidden_claim ---
-        for v in forbidden_viols:
-            parts.append(
-                "🔴 КРИТИЧНО — ЗАПРЕЩЁННОЕ УТВЕРЖДЕНИЕ\n"
-                f"   Найдено: «{v.evidence}»\n"
-                "   ДЕЙСТВИЕ: УДАЛИ это слово/фразу полностью. "
-                "НЕ заменяй синонимом. НЕ перефразируй с тем же смыслом. Просто убери.\n"
-                f"   -> {v.fix_hint}"
-            )
+def _split_sentences(text: str) -> List[str]:
+  """Naive sentence split on . ! ? while keeping empty parts out."""
+  parts = re.split(r"(?<=[.!?])\s+", text.strip())
+  return [p.strip() for p in parts if p.strip()]
 
-        # --- PRIORITY 3: everything else ---
-        for v in other_viols:
-            parts.append(f"- [{v.severity}] {v.rule}: {v.evidence}\n    -> {v.fix_hint}")
 
-        header = "Нарушения, которые надо исправить (в порядке приоритета):\n"
-        return header + "\n\n".join(parts)
+def _extract_numbers(text: str) -> List[str]:
+  """Extract every number token from the letter, normalized (no inner spaces)."""
+  out: List[str] = []
+  for raw in _NUMBER_RE.findall(text):
+      normalized = re.sub(r"\s+", "", raw)
+      if normalized and normalized not in out:
+          out.append(normalized)
+  return out
+
+
+def _normalize_number(token: str) -> str:
+  """Strip trailing '+' and inner whitespace so '3+' and '3' compare equal to whitelist '3'."""
+  return re.sub(r"\s+", "", token).rstrip("+")
+
+
+def _extract_tech(text: str, allowed: Set[str]) -> List[str]:
+  """Return tech tokens from the allowed set that actually appear in the letter."""
+  lower = text.lower()
+  found: List[str] = []
+  for tech in allowed:
+      if not tech:
+          continue
+      if tech.lower() in lower and tech not in found:
+          found.append(tech)
+  return found
+
+
+def _detect_anglicisms(text: str) -> List[tuple[str, str]]:
+  """Find Cyrillic-calque anglicisms in the letter.
+
+  Returns a list of (matched_token, fix_hint) tuples. Each unique token
+  is reported once even if it appears multiple times.
+  """
+  seen: Set[str] = set()
+  findings: List[tuple[str, str]] = []
+  for pattern, hint in _ANGLICISM_PATTERNS:
+      for match in pattern.finditer(text):
+          token = match.group(0)
+          key = token.lower()
+          if key in seen:
+              continue
+          seen.add(key)
+          findings.append((token, hint))
+  return findings
+
+
+def validate_deterministic(
+  letter: str,
+  *,
+  facts: CanonicalFacts,
+  allowed_numbers: List[str],
+  selected_achievements: Optional[List[str]] = None,
+  min_words: int = 70,
+  max_words: int = 110,
+  universal_mode: bool = False,
+) -> ValidationResult:
+  """Run all deterministic checks. Returns a ValidationResult."""
+
+  violations: List[Violation] = []
+  text = letter.strip()
+  words = text.split()
+  word_count = len(words)
+
+  # 1. Word count
+  if word_count < min_words:
+      violations.append(Violation(
+          rule="word_count_too_low",
+          severity="hard",
+          evidence=f"{word_count} слов (минимум {min_words})",
+          fix_hint=f"Расширь содержание до {min_words}-{max_words} слов, добавь 1-2 конкретных факта о проекте.",
+      ))
+  elif word_count > max_words:
+      violations.append(Violation(
+          rule="word_count_too_high",
+          severity="hard",
+          evidence=f"{word_count} слов (максимум {max_words})",
+          fix_hint=f"Сократи до {min_words}-{max_words} слов, убери общие фразы.",
+      ))
+
+  # 2. Numbers — every number in the letter must be in the whitelist.
+  allowed_set = {_normalize_number(n) for n in allowed_numbers if n}
+  # Also allow numbers that appear in the candidate's resume globally.
+  allowed_set.update(_normalize_number(n) for n in facts.allowed_numbers if n)
+
+  used_numbers_raw = _extract_numbers(text)
+  used_numbers: List[str] = []
+  for token in used_numbers_raw:
+      norm = _normalize_number(token)
+      if norm and norm not in used_numbers:
+          used_numbers.append(norm)
+      if norm and norm not in allowed_set:
+          violations.append(Violation(
+              rule="invented_number",
+              severity="hard",
+              evidence=f"Число '{token}' отсутствует в whitelist",
+              fix_hint=f"Удали '{token}' или замени на число из allowed_numbers: {sorted(allowed_set)[:8]}",
+          ))
+
+  # 3. Forbidden claims — substring (grounded against the resume).
+  grounded_forbidden = facts.forbidden_claims_grounded()
+  letter_lower = text.lower()
+  for phrase in grounded_forbidden:
+      if phrase.lower() in letter_lower:
+          violations.append(Violation(
+              rule="forbidden_claim",
+              severity="hard",
+              evidence=f"запрещённая фраза '{phrase}' (нет в резюме)",
+              fix_hint=f"Убери '{phrase}' — этого нет в опыте кандидата.",
+          ))
+
+  # 3a. Forbidden patterns — regex (grounded against the resume).
+  # Catches per-digit hallucinations (X% efficiency, X млн пользователей,
+  # X-минутный созвон, после 17:00, etc.) that vary by digit and so can't
+  # be enumerated as static substrings.
+  grounded_regexes = []
+  if hasattr(facts, "forbidden_regexes_grounded"):
+      grounded_regexes = facts.forbidden_regexes_grounded()
+  for pattern in grounded_regexes:
+      match = pattern.search(text)
+      if match:
+          matched_text = match.group(0)
+          violations.append(Violation(
+              rule="forbidden_pattern",
+              severity="hard",
+              evidence=f"запрещённый шаблон '{matched_text}' (нет в резюме)",
+              fix_hint=(
+                  f"Убери '{matched_text}' — это выдуманный факт "
+                  f"(процент эффективности / маштаба аудитории / конкретное время), "
+                  f"которого нет в резюме."
+              ),
+          ))
+
+  # 4. No years-of-experience framing in the opener (first 2 sentences).
+  sentences = _split_sentences(text)
+  opener = " ".join(sentences[:2]) if sentences else ""
+  if _YEARS_RE.search(opener):
+      match = _YEARS_RE.search(opener)
+      violations.append(Violation(
+          rule="no_years_in_opener",
+          severity="hard",
+          evidence=f"годы опыта в опенере: '{match.group(0) if match else ''}'",
+          fix_hint="Начни с конкретного достижения/факта о проекте, без 'X лет опыта'.",
+      ))
+
+  # 5. Tech tokens — informational only (we record what's used, no hard fail in universal mode).
+  combined_allowed: Set[str] = set(BASE_ALLOWED_TECH) | set(facts.allowed_tech)
+  used_tech = _extract_tech(text, combined_allowed)
+
+  # 6. Anglicisms — Cyrillic-spelled calque loanwords (SOFT severity).
+  # We don't block the letter on these, but they trigger repair so the
+  # writer can replace them with native equivalents or Latin technical terms.
+  for token, hint in _detect_anglicisms(text):
+      violations.append(Violation(
+          rule="anglicism",
+          severity="soft",
+          evidence=f"англицизм '{token}'",
+          fix_hint=f"Замени '{token}' на: {hint}",
+      ))
+
+  passed = not any(v.severity == "hard" for v in violations)
+
+  return ValidationResult(
+      passed=passed,
+      violations=violations,
+      word_count=word_count,
+      used_numbers=used_numbers,
+      used_tech=used_tech,
+  )
+
+
+# --- Semantic validation ------------------------------------------------------
+
+
+# Rules for which a missing/invalid severity defaults to "hard" because the
+# violation is high-impact and we never want a silent soft downgrade.
+_HARD_DEFAULT_RULES: Set[str] = {
+  "invented_facts",
+  "advice_to_company",
+  "hook_not_addressed",
+  "tone_consulting",
+  "no_concrete_facts",
+  "vacancy_domain_not_addressed",
+}
+
+
+def _coerce_violation(raw: Any) -> Optional[Violation]:
+  """Build a Violation from a raw dict returned by the LLM.
+
+  Severity handling:
+    - If the LLM returned a recognised severity ("hard" | "soft"), use it.
+    - If severity is missing or invalid AND the rule is in the hard-default
+      list (invented_facts, advice_to_company, hook_not_addressed,
+      tone_consulting, no_concrete_facts, vacancy_domain_not_addressed),
+      fall back to "hard" and log a warning. Previously the fallback was
+      "soft", which silently downgraded high-impact violations and let
+      broken letters pass.
+    - Otherwise fall back to "soft".
+  """
+  if not isinstance(raw, dict):
+      return None
+  rule = str(raw.get("rule") or "").strip()
+  if not rule:
+      return None
+
+  raw_severity = str(raw.get("severity") or "").strip().lower()
+  if raw_severity in _VALID_SEVERITIES:
+      severity = raw_severity
+  elif rule in _HARD_DEFAULT_RULES:
+      logger.warning(
+          "Semantic validator returned rule %r without valid severity (%r); "
+          "defaulting to 'hard' because rule is in hard-default list.",
+          rule, raw.get("severity"),
+      )
+      severity = "hard"
+  else:
+      severity = "soft"
+
+  return Violation(
+      rule=rule,
+      severity=severity,
+      evidence=str(raw.get("evidence") or ""),
+      fix_hint=str(raw.get("fix_hint") or ""),
+  )
+
+
+async def validate_semantic(
+  llm: LLMClient,
+  letter: str,
+  analyzer_json: Dict[str, Any],
+  allowed_numbers: List[str],
+) -> ValidationResult:
+  """Run the LLM-based semantic validator. Returns a ValidationResult.
+
+  Severity contract: a letter passes semantic validation iff it has
+  NO hard violations. Soft violations (cliches, weak phrasing,
+  invented_facts flagged as soft, etc.) are still returned in
+  `result.violations` so callers can surface them, but they do NOT
+  block the letter or force a retry. This mirrors the deterministic
+  validator's behavior and prevents the prior regression where letters
+  that broke zero hard rules were killed after 3 retries because the
+  LLM tagged a single soft cliche.
+
+  On any error (LLM failure, malformed JSON), returns passed=True with
+  an empty violations list — the deterministic validator already caught
+  the hard rules, and we don't want a flaky semantic pass to block the
+  letter.
+  """
+
+  user_prompt = build_validator_user(letter, analyzer_json, list(allowed_numbers))
+
+  try:
+      raw = await llm.complete_json(
+          system=VALIDATOR_SYSTEM,
+          user=user_prompt,
+          temperature=0.0,
+          max_tokens=600,
+      )
+  except Exception as exc:
+      logger.warning("Semantic validator LLM call failed: %s", exc)
+      return ValidationResult(passed=True, violations=[], word_count=len(letter.split()))
+
+  # `raw` may be a dict or a JSON string depending on the client.
+  if isinstance(raw, str):
+      try:
+          raw = json.loads(raw)
+      except json.JSONDecodeError as exc:
+          logger.warning("Semantic validator returned non-JSON: %s", exc)
+          return ValidationResult(passed=True, violations=[], word_count=len(letter.split()))
+
+  if not isinstance(raw, dict):
+      logger.warning("Semantic validator returned unexpected type: %s", type(raw).__name__)
+      return ValidationResult(passed=True, violations=[], word_count=len(letter.split()))
+
+  raw_violations = raw.get("violations") or []
+  violations: List[Violation] = []
+  for item in raw_violations:
+      v = _coerce_violation(item)
+      if v is not None:
+          violations.append(v)
+
+  # Severity contract: pass iff NO hard violations.
+  # We deliberately IGNORE the model's `passed` boolean here — models often
+  # set passed=false because they emitted a soft remark, which is exactly
+  # the regression this rewrite prevents.
+  has_hard = any(v.severity == "hard" for v in violations)
+  passed_flag = not has_hard
+
+  if violations:
+      logger.info(
+          "Semantic validator returned %d violation(s) [%d hard / %d soft]: %s",
+          len(violations),
+          sum(1 for v in violations if v.severity == "hard"),
+          sum(1 for v in violations if v.severity == "soft"),
+          [v.rule for v in violations],
+      )
+
+  return ValidationResult(
+      passed=passed_flag,
+      violations=violations,
+      word_count=len(letter.split()),
+  )
+
+
+__all__ = [
+  "BASE_ALLOWED_TECH",
+  "ANGLICISMS",
+  "Violation",
+  "ValidationResult",
+  "validate_deterministic",
+  "validate_semantic",
+]
