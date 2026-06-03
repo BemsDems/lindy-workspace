@@ -141,16 +141,31 @@ async def amain() -> int:
     for r in results:
         safe_company = re.sub(r"[^\w\-]+", "_", r.company or "unknown").strip("_") or "unknown"
         if r.letter:
-            out_path = args.out / f"{safe_company}_{r.vacancy_id[:8]}.txt"
             signature = f"\n\nС уважением,\n{profile.name}" if profile.name else ""
-            # Do not add validation errors to the letter itself
-            out_path.write_text(r.letter + signature, encoding="utf-8")
             if r.passed:
+                # Validated letter: write the clean, ready-to-send file.
+                out_path = args.out / f"{safe_company}_{r.vacancy_id[:8]}.txt"
+                # Do not add validation errors to the letter itself
+                out_path.write_text(r.letter + signature, encoding="utf-8")
                 generated += 1
                 print(f"OK   {out_path.name}  ({r.word_count} words, attempts={r.attempts})")
             else:
+                # Letter did NOT pass validation. Never let a hard-fail draft be
+                # mistaken for a ready letter: write it to a DO_NOT_SEND_* file and
+                # prepend a banner listing the reasons. This is the deterministic
+                # safety net for hard fails (forbidden-domain claims, domain
+                # mismatch, word-count out of range, etc.).
+                out_path = args.out / f"DO_NOT_SEND_{safe_company}_{r.vacancy_id[:8]}.txt"
+                reasons = "; ".join(r.violations) if r.violations else (r.error or "validation failed")
+                banner = (
+                    "⚠️ НЕ ОТПРАВЛЯТЬ — письмо не прошло валидацию.\n"
+                    f"Причины: {reasons}\n"
+                    "Исправьте проблемы или перегенерируйте письмо перед отправкой.\n"
+                    "-----8<----- черновик ниже -----8<-----\n\n"
+                )
+                out_path.write_text(banner + r.letter + signature, encoding="utf-8")
                 failed += 1
-                print(f"WARN {out_path.name}  ({r.word_count} words, attempts={r.attempts}): validation errors")
+                print(f"WARN {out_path.name}  ({r.word_count} words, attempts={r.attempts}): validation errors -> flagged DO_NOT_SEND")
         else:
             failed += 1
             print(
