@@ -561,4 +561,29 @@ async def analyze(
     if not isinstance(parsed.get("confidence_reason"), str):
         parsed["confidence_reason"] = "Причина выбора проекта не указана."
 
+    # P5: role-mismatch guard. If the vacancy is clearly a teaching / speaker /
+    # mentor / advocate role but NONE of the candidate's projects carry any
+    # teaching signal, the analyzer's project pick is a forced fit. Flag it via
+    # role_mismatch=True so the pipeline can skip generation instead of emitting
+    # a letter that claims teaching relevance the resume can't support, and
+    # hard-cap confidence so downstream low-confidence handling also triggers.
+    vacancy_is_teaching = _has_any(_vacancy_text(vacancy), _TEACHING_VACANCY_TERMS)
+    if vacancy_is_teaching:
+        any_teaching_project = any(
+            _has_any(_project_text(project), _TEACHING_PROJECT_TERMS)
+            for project in facts.projects.values()
+        )
+        if not any_teaching_project:
+            parsed["role_mismatch"] = True
+            try:
+                current_conf = float(parsed.get("confidence", 0.5))
+            except (TypeError, ValueError):
+                current_conf = 0.5
+            parsed["confidence"] = min(current_conf, 0.15)
+            logger.info(
+                "P5 role-mismatch: teaching/speaker vacancy but no teaching-"
+                "flavoured project in resume; capped confidence to %.2f",
+                parsed["confidence"],
+            )
+
     return parsed
