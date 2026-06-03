@@ -81,7 +81,37 @@ _GREETING_RE = re.compile(
 
 _WORD_RE = re.compile(r"\w+", re.UNICODE)
 
+
+def _word_count(text: str) -> int:
+    """Count words the same way the validator/clamp do (\\w+ tokens).
+
+    Exposed as a small shared helper so tests and other modules rely on a
+    single definition of \"word\" instead of each re-deriving it from _WORD_RE.
+    """
+    return len(_WORD_RE.findall(text or ""))
+
+
 _PARAGRAPH_SPLIT_RE = re.compile(r"\n\s*\n")
+
+# Version strings like "3.22.2" occasionally come back from the LLM with stray
+# spaces after the dots ("3. 22. 2"), which both looks broken and desyncs the
+# number from its allowed-numbers whitelist. Collapse the internal whitespace
+# of any THREE-part numeric version back to canonical "X.Y.Z". Restricting the
+# pattern to three dotted numeric groups keeps it from merging real sentence
+# boundaries such as "...5 модулей. 3 из них..." (no third dotted group there).
+_SPACED_VERSION_RE = re.compile(r"\b(\d+)\.\s*(\d+)\.\s*(\d+)\b")
+
+
+def normalize_version_numbers(text: str) -> str:
+    """Canonicalize spaced-out 3-part version numbers: "3. 22. 2" -> "3.22.2".
+
+    No-op for already-clean versions ("3.22.2") and for anything that is not a
+    three-part dotted numeric run, so ordinary prose and 2-part decimals
+    ("99.5%") are left untouched.
+    """
+    if not text:
+        return text
+    return _SPACED_VERSION_RE.sub(r"\1.\2.\3", text)
 
 
 def _split_sentences(paragraph: str) -> List[str]:
@@ -267,7 +297,12 @@ def normalize_punctuation(text: str) -> str:
         item = re.sub(r"\s+([,.;:!?])", r"\1", stripped)
         item = re.sub(r"([,.;:!?])([^\s\d])", r"\1 \2", item)
         item = re.sub(r"([!?.]){2,}", r"\1", item)
+        item = re.sub(r",(\s*,)+", ",", item)  # collapse repeated commas
+        item = re.sub(r"\s*\(\s*\)\s*", " ", item)  # drop empty () left by fragment removal
+        item = re.sub(r"—(?:\s*—)+", "—", item)  # collapse repeated em-dashes
+        item = re.sub(r"\s*—\s*([.,;:!?])", r"\1", item)  # drop dangling em-dash before punctuation
         item = re.sub(r"\s+—\s+", " — ", item)
+        item = item.strip()
         cleaned.append(item)
     return "\n\n".join(cleaned)
 
@@ -281,10 +316,12 @@ def normalize_whitespace(text: str) -> str:
 
 
 def postprocess_letter(text: str) -> str:
-    """Full deterministic clean. Order matters: meta/sig first, then the
-    years-opener guard (must run BEFORE stack-dump and weak-ending so they
-    operate on the corrected opener), then stack-dump, then weak ending,
-    then punctuation artefacts, then whitespace.
+    """Full deterministic clean. Order matters: version numbers first (so the
+    rest of the pipeline and the validator see canonical "X.Y.Z" rather than a
+    spaced "3. 22. 2"), then meta/sig, then the years-opener guard (must run
+    BEFORE stack-dump and weak-ending so they operate on the corrected
+    opener), then stack-dump, then weak ending, then punctuation artefacts,
+    then whitespace.
 
     All stages are PARAGRAPH-AWARE: they preserve \n\n boundaries so the
     final letter keeps its visual structure (greeting | body | second
@@ -293,6 +330,7 @@ def postprocess_letter(text: str) -> str:
     if not text:
         return text
     initial_len = len(text)
+    text = normalize_version_numbers(text)
     text = strip_meta_and_signature(text)
     text = strip_years_opener(text)
     text = strip_stack_dump(text)
@@ -363,6 +401,7 @@ def enforce_max_words(text: str, max_words: int) -> str:
 __all__ = [
     "postprocess_letter",
     "enforce_max_words",
+    "normalize_version_numbers",
     "strip_meta_and_signature",
     "strip_years_opener",
     "strip_stack_dump",

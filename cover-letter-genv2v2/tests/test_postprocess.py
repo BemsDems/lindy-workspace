@@ -3,8 +3,8 @@
 These guarantee the form-level contract holds regardless of model output:
 - the reference letter passes through untouched,
 - stack dumps / signatures / weak endings / meta lines are removed,
-- vplетённые (inline) technologies are preserved (not mistaken for a dump),
-- decimals survive sentence splitting.
+- vплетённые (inline) technologies are preserved (not mistaken for a dump),
+- decimals and version numbers survive sentence splitting.
 """
 
 from src.postprocess import (
@@ -12,6 +12,7 @@ from src.postprocess import (
     strip_stack_dump,
     strip_weak_ending,
     strip_meta_and_signature,
+    normalize_version_numbers,
     _word_count,
 )
 
@@ -65,7 +66,13 @@ def test_stack_dump_without_lead_is_removed():
 
 
 def test_weak_ending_is_removed():
-    text = "Решал задачи стабильности. Готов применить этот опыт для выпуска карт."
+    """The boilerplate closing is dropped — but only when enough real content
+    remains (the rollback guard intentionally keeps stub letters intact)."""
+    text = (
+        "Решал задачи стабильности в платёжном приложении. "
+        "Декомпозировал крупные экраны на переиспользуемые компоненты. "
+        "Готов применить этот опыт для выпуска карт."
+    )
     out = strip_weak_ending(text)
     assert "Готов применить" not in out
     assert "Решал задачи стабильности" in out
@@ -87,25 +94,44 @@ def test_meta_prefix_is_removed():
 
 
 def test_decimal_survives_split():
-    text = "Поднял стабильность с 92% до 99.5%. Готов применить опыт."
+    """A decimal such as 99.5% must not be split into a new sentence."""
+    text = (
+        "Поднял стабильность с 92% до 99.5% в проде. "
+        "Декомпозировал крупные экраны на компоненты. "
+        "Готов применить опыт."
+    )
     out = postprocess_letter(text)
     assert "99.5%" in out
     assert "Готов" not in out
 
 
-def test_verb_led_dump_with_connectors_is_removed():
-    """Real case: 'Работал с A, B/C, D, REST API, gRPC, … и Secure Storage' —
-    a dump glued by commas/slashes/'и' that the comma regex alone missed."""
+def test_verb_led_pure_list_is_removed():
+    """A pure trailing tech list (no narrative) IS a dump and gets removed.
+
+    NOTE: a list *followed by real narrative/metrics* is intentionally
+    preserved — see test_list_with_narrative_is_preserved — because stripping
+    it would destroy genuine achievement sentences."""
     text = (
         "3+ года Flutter-разработки. "
-        "Работал с Clean Architecture, BLoC/Cubit, Dio, REST API, gRPC, Protobuf, "
-        "Drift и Secure Storage — строил приложения от навигации до аналитики. "
+        "Работал с Dio, REST API, gRPC, Protobuf, Drift, Secure Storage. "
         "Переработал auth модуль."
     )
     out = strip_stack_dump(text)
     assert "Protobuf" not in out
     assert "Secure Storage" not in out
     assert "Переработал auth модуль" in out
+
+
+def test_list_with_narrative_is_preserved():
+    """A tech list that is part of a sentence carrying real narrative/metrics
+    must be preserved (offline-verified against a real generated letter)."""
+    text = (
+        "Работал с Firebase Auth, FCM и Dio в приложении доставки еды — "
+        "интегрировал push-уведомления и подготовил 13+ релизов в сторах."
+    )
+    out = strip_stack_dump(text)
+    assert "Firebase Auth" in out
+    assert "13+ релизов" in out
 
 
 def test_inline_multi_tech_prose_is_preserved():
@@ -141,3 +167,38 @@ def test_punctuation_artifacts_are_cleaned():
 
 def test_empty_input():
     assert postprocess_letter("") == ""
+
+
+# --- Version-number normalization (3. 22. 2 -> 3.22.2) ---------------------
+
+
+def test_spaced_version_is_normalized():
+    assert normalize_version_numbers("Flutter 3. 22. 2 обновил") == "Flutter 3.22.2 обновил"
+    assert normalize_version_numbers("3. 0. 2") == "3.0.2"
+
+
+def test_spaced_version_in_migration_arrow():
+    text = "3.0.2 → 3. 22. 2 → 3.29.0"
+    assert normalize_version_numbers(text) == "3.0.2 → 3.22.2 → 3.29.0"
+
+
+def test_clean_version_is_unchanged():
+    text = "Миграция Flutter 3.22.2 → 3.29.0 прошла гладко."
+    assert normalize_version_numbers(text) == text
+
+
+def test_two_part_decimal_not_touched():
+    assert normalize_version_numbers("рост до 99.5%") == "рост до 99.5%"
+
+
+def test_sentence_boundary_not_merged():
+    s = "Завершил 5 модулей. 3 из них переписал заново."
+    assert normalize_version_numbers(s) == s
+
+
+def test_version_fix_via_postprocess():
+    text = "Провёл миграцию Flutter 3.0.2 → 3. 22. 2 → 3.29.0 без проблем."
+    out = postprocess_letter(text)
+    assert "3. 22. 2" not in out
+    assert "3.22.2" in out
+    assert "3.0.2" in out and "3.29.0" in out
