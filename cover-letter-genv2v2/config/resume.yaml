@@ -96,6 +96,10 @@ experience:
             - Injectable
             - gRPC
             - Protobuf
+            - fpdart
+            - Talker
+            - FilePicker
+            - FVM
           achievements:
             - Спроектировал архитектуру приложения на Clean Architecture с DI, настроил gRPC-клиент и автогенерацию Dart-кода
             - Реализовал 7 ключевых B2B-модулей
@@ -120,6 +124,14 @@ experience:
             - WebView
             - JWT
             - Secure Storage
+            - GetIt
+            - Injectable
+            - Freezed
+            - auto_route
+            - image_picker
+            - slang
+            - flutter_dotenv
+            - Keycloak
           achievements:
             - 'Полностью переписал модуль авторизации: 3 способа входа (телефон+OTP, email+пароль с восстановлением, OAuth через Yandex/VK/VK ID), JWT-токены, обработка ошибок и retry-сценарии — пользователи получили стабильный вход с восстановлением доступа.'
             - Использовал Clean Architecture проекта (repository + Cubit + sealed states), настроил Dio с обработкой HTTP-ошибок и retry-callback при 5xx.
@@ -194,6 +206,10 @@ experience:
             - flutter_local_notifications
             - flutter_branch_sdk
             - FVM
+            - pinput
+            - Freezed
+            - InViewNotifierList
+            - AutoScrollController
           achievements:
             - 'Полностью переписал модуль авторизации: обработка DioError и rate-limit 429, SMS-верификация через Pinput с таймером и retry, восстановление пароля — заменил устаревший модуль стабильным flow входа.'
             - Реализовал восстановление пароля с отдельным ForgotPasswordCubit, ForgotPasswordRepository и двумя экранами верификации.
