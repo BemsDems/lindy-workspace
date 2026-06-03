@@ -257,11 +257,16 @@ async def write_letter(
 	brief = build_canonical_facts_brief(facts, selected_project)
 	# v2: opener pool now consumes CanonicalFacts + selected_project and
 	# returns achievement-based hooks instead of "{years}+ years" templates.
+	# P3-B: pass vacancy text so the opener pool can pick a domain-relevant
+	# opener, and rotate by how many starts we've already used in this batch
+	# so repeated generations don't reuse the same first sentence.
 	opener_pool = select_openers(
 		facts,
 		selected_project,
 		used_starts or [],
 		n=2,
+		vacancy_text=" ".join([vacancy_title, vacancy_description, " ".join(vacancy_requirements or [])]),
+		rotate=len(used_starts or []),
 	)
 
 	# Generate the final letter FROM FACTS ONLY.
@@ -404,6 +409,10 @@ F.3. Конкретные времена и длительности созво�
 
 F.4. Точные количества обeщания будущего:
 - «выйду на full performance за 2 недели», «закрою задачу за X дней», «снижу bug rate на X%».
+
+F.5. Девелоперские метрики тщеславия (количество .dart-файлов / строк кода / коммитов / репозиториев / виджетов / затронутых файлов):
+- «215 .dart-файлов», «13 897 строк кода», «9 репозиториев», «77 коммитов», «7 виджетов», «затронул 33 файла».
+- Это внутренняя инженерная статистика – она НЕ интересна HR и тимлиду и читается как хвастовство объёмом работы. НЕ переноси такие числа в письмо, даже если они есть в ACHIEVEMENTS. Вместо «голой» метрики покажи бизнес-результат: что это дало пользователю или продукту.
 
 G. HOOK ЗАКРЫТ ЯВНО (КРИТИЧНО).
 Если в блоке HOOK передана непустая фраза (то есть не «(не передан...)»), ПЕРВОЕ содержательное предложение после GREETING ОБЯЗАНО буквально отвечать на эту фразу:
@@ -556,6 +565,7 @@ def _finalizer_user(
 	parts.append("- любые «X%» рядом со словами «быстрее», «улучшение», «снижение», «рост», «производительность», «оптимизация»;")
 	parts.append("- любые «X млн / X тыс. пользователей / клиентов / установок / компаний»;")
 	parts.append("- любые «20-минутный созвон», «созвон на 30 минут», «после 17:00», «после 18:00», «в будни», «в пятницу вечером»;")
+	parts.append("- любые «голые» девелоперские метрики: «X .dart-файлов», «X строк кода», «X коммитов», «X репозиториев», «X виджетов», «затронул X файлов» — это инженерная статистика, не бизнес-результат;")
 	parts.append("Финал должен быть живым, но БЕЗ конкретного времени и длительности.")
 	parts.append("")
 	parts.append("=== ЗАДАЧА ===")

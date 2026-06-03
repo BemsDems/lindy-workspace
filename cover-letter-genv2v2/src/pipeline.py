@@ -54,21 +54,35 @@ v7 changes:
 logs/failed_letters.jsonl via fail_logger.log_failure. This gives us a
 machine-readable audit trail for analyzer/writer/repair exceptions,
 skipped_low_confidence cases, and validation_failed_after_retries.
+
+v8 changes (grounding-quality P1/P4/P5):
+- P1-C: domain-lock — pass project-specific foreign-domain forbidden terms
+into validate_deterministic so e.g. a fintech project can't claim
+streaming/medtech domain language.
+- P1-D: intersect analyzer selected_numbers with the selected project's
+allowed_numbers (plus whitelisted Flutter migration versions) so a number
+that belongs to a different project can't leak into the letter.
+- P4: enforce the configured max_words hard cap after postprocess on every
+generation/repair attempt.
+- P5: when the analyzer flags a role mismatch, the low-confidence skip is
+labeled `skipped_role_mismatch` for a clearer audit trail.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from .analyzer import analyze
+from .domain_lock import foreign_domain_terms_for_project
 from .facts import CanonicalFacts, extract_canonical_facts
 from .llm_client import LLMClient
 from .models import Profile, Vacancy
 from .validator import ValidationResult, validate_deterministic, validate_semantic
-from .postprocess import postprocess_letter
+from .postprocess import postprocess_letter, enforce_max_words
 from .writer import repair_letter_after_validation, write_letter
 from .fail_logger import log_failure
 
@@ -245,6 +259,26 @@ class CoverLetterPipeline:
       selected_numbers = preserved[:5]
       analyzer_json["selected_numbers"] = selected_numbers
 
+      # P1-D: keep only numbers grounded in the selected project's
+      # allowed_numbers (plus the whitelisted Flutter migration versions), so
+      # the analyzer can't smuggle a number that actually belongs to a
+      # different project into this letter.
+      project_facts = self.facts.project(selected_project)
+      if project_facts is not None:
+          allowed_norm = {
+              re.sub(r"[\s\u00a0]+", "", str(number).lower().replace(",", "."))
+              for number in (project_facts.allowed_numbers or [])
+          }
+          # Always allow the real Flutter migration versions.
+          allowed_norm.update({"3.0.2", "3.29.0"})
+          selected_numbers = [
+              number
+              for number in selected_numbers
+              if re.sub(r"[\s\u00a0]+", "", str(number).lower().replace(",", "."))
+              in allowed_norm
+          ]
+          analyzer_json["selected_numbers"] = selected_numbers
+
       # Hard skip on very low confidence — emit a result with no letter.
       if confidence < self.config.skip_below_confidence:
           logger.info(
@@ -269,7 +303,11 @@ class CoverLetterPipeline:
               word_count=0,
               passed=False,
               attempts=0,
-              error="skipped_low_confidence",
+              error=(
+                  "skipped_role_mismatch"
+                  if analyzer_json.get("role_mismatch")
+                  else "skipped_low_confidence"
+              ),
           )
           log_failure(skipped)
           return skipped
@@ -292,6 +330,11 @@ class CoverLetterPipeline:
       from .writer import build_canonical_facts_brief
       canonical_facts_brief = build_canonical_facts_brief(self.facts, selected_project)
 
+      # P1-C: domain-lock forbidden terms for the selected project. Prevents the
+      # letter from claiming a foreign domain's vocabulary (e.g. a fintech
+      # project should not surface streaming/medtech domain language).
+      extra_forbidden = foreign_domain_terms_for_project(selected_project)
+
       for attempt in range(1, self.config.max_writer_retries + 2):
           # On attempt > 1 with repair enabled: use targeted repair instead of full rewrite.
           if attempt > 1 and self.config.repair_on_validation_failed and feedback and last_letter:
@@ -308,6 +351,7 @@ class CoverLetterPipeline:
                       timeout=self.config.stage_timeout,
                   )
                   last_letter = postprocess_letter(last_letter)
+                  last_letter = enforce_max_words(last_letter, self.config.max_words)
               except Exception as exc:  # noqa: BLE001
                   logger.exception(
                       "Repair failed (attempt %d) for vacancy %s", attempt, vacancy.id
@@ -343,6 +387,7 @@ class CoverLetterPipeline:
                       timeout=self.config.stage_timeout,
                   )
                   last_letter = postprocess_letter(last_letter)
+                  last_letter = enforce_max_words(last_letter, self.config.max_words)
               except Exception as exc:  # noqa: BLE001
                   logger.exception(
                       "Writer failed (attempt %d) for vacancy %s", attempt, vacancy.id
@@ -372,6 +417,7 @@ class CoverLetterPipeline:
                   facts=self.facts,
                   allowed_numbers=selected_numbers,
                   selected_achievements=analyzer_json.get("selected_achievements") or [],
+                  extra_forbidden_claims=extra_forbidden,
                   min_words=self.config.min_words,
                   max_words=self.config.max_words,
                   universal_mode=universal_mode,

@@ -124,6 +124,25 @@ _ANGLICISM_PATTERNS: List[tuple[re.Pattern, str]] = [
 _VALID_SEVERITIES: Set[str] = {"hard", "soft"}
 
 
+# Developer "vanity" metrics: raw counts of files / lines / commits / repos /
+# widgets. P2: these must NEVER appear in a cover letter — they read as
+# self-indulgent engineering trivia to a hiring manager and crowd out business
+# impact. This is an UNGROUNDED hard check: even though the candidate's resume
+# legitimately contains these numbers, they must not leak into the letter
+# (P2-D removes them from the resume source; this regex is the deterministic
+# backstop). Patterns intentionally require an adjacent digit so we only catch
+# the "215 .dart-файлов" / "13 897 строк" / "77 коммитов" framing, not generic
+# mentions of "файл" or "релиз".
+_DEV_VANITY_RE: List[re.Pattern] = [
+  re.compile(r"\d[\d\s.,]*\s*\.?dart[-\s]*файл\w*", re.IGNORECASE),
+  re.compile(r"\d[\d\s.,]*\s*строк\w*", re.IGNORECASE),
+  re.compile(r"\d[\d\s.,]*\s*коммит\w*", re.IGNORECASE),
+  re.compile(r"\d[\d\s.,]*\s*репозитори\w*", re.IGNORECASE),
+  re.compile(r"\d[\d\s.,]*\s*виджет\w*", re.IGNORECASE),
+  re.compile(r"\d[\d\s.,]*\s*файл\w*", re.IGNORECASE),
+]
+
+
 @dataclass
 class Violation:
   """A single validation failure."""
@@ -246,11 +265,20 @@ def validate_deterministic(
   facts: CanonicalFacts,
   allowed_numbers: List[str],
   selected_achievements: Optional[List[str]] = None,
+  extra_forbidden_claims: Optional[List[str]] = None,
   min_words: int = 70,
   max_words: int = 110,
   universal_mode: bool = False,
 ) -> ValidationResult:
-  """Run all deterministic checks. Returns a ValidationResult."""
+  """Run all deterministic checks. Returns a ValidationResult.
+
+  `extra_forbidden_claims` (P1): caller-supplied substrings that must NOT
+  appear in this specific letter (foreign-domain signal words from the
+  candidate's OTHER projects — see domain_lock.foreign_domain_terms_for_project).
+  Treated as a hard `foreign_domain` violation. Ungrounded by design: these
+  words may legitimately exist in the resume, but not in a letter about the
+  selected project.
+  """
 
   violations: List[Violation] = []
   text = letter.strip()
@@ -323,6 +351,39 @@ def validate_deterministic(
                   f"Убери '{matched_text}' — это выдуманный факт "
                   f"(процент эффективности / маштаба аудитории / конкретное время), "
                   f"которого нет в резюме."
+              ),
+          ))
+
+  # 3b. Developer vanity metrics — raw file/line/commit/repo/widget counts.
+  # UNGROUNDED hard check (see _DEV_VANITY_RE): forbidden regardless of the
+  # resume, because these read as engineering trivia rather than impact.
+  for pattern in _DEV_VANITY_RE:
+      m = pattern.search(text)
+      if m:
+          violations.append(Violation(
+              rule="dev_vanity_metric",
+              severity="hard",
+              evidence=f"девелоперская метрика-тщеславие: '{m.group(0).strip()}'",
+              fix_hint=(
+                  "Убери «голую» техническую метрику (количество файлов / строк / "
+                  "коммитов / репозиториев / виджетов) и замени на бизнес-результат: "
+                  "что это дало пользователю или продукту."
+              ),
+          ))
+
+  # 3c. Foreign-domain terms (P1) — caller passes domain signal words from
+  # OTHER projects' domains (see domain_lock.foreign_domain_terms_for_project).
+  # UNGROUNDED hard check: the candidate's other projects may legitimately use
+  # these words, but they must not leak into a letter about THIS project.
+  for phrase in (extra_forbidden_claims or []):
+      if phrase and phrase.lower() in letter_lower:
+          violations.append(Violation(
+              rule="foreign_domain",
+              severity="hard",
+              evidence=f"термин из чужого домена: '{phrase}'",
+              fix_hint=(
+                  f"Убери '{phrase}' — это словарь другого проекта/домена, "
+                  f"не относящегося к выбранному в этом письме."
               ),
           ))
 

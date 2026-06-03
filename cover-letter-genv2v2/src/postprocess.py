@@ -170,9 +170,6 @@ def strip_years_opener(text: str) -> str:
     removed_sentence = sentences[0]
     remaining = sentences[1:]
 
-    # Rollback: if dropping the opener leaves the entire first paragraph
-    # empty AND it's the only paragraph, keep the original — we have
-    # nothing else to anchor the letter on.
     if not remaining and len(paragraphs) <= 1:
         logger.debug(
             "strip_years_opener: rolled back removal — opener is the only sentence "
@@ -190,10 +187,6 @@ def strip_years_opener(text: str) -> str:
         new_first_para = (greeting + " ".join(remaining)).strip()
         paragraphs[0] = new_first_para
     else:
-        # First paragraph collapsed to just the greeting (or empty) and we
-        # have more paragraphs — drop the empty first paragraph entirely
-        # so the next paragraph becomes the new opener, but preserve the
-        # greeting by prepending it to the new first paragraph.
         if greeting.strip():
             paragraphs[1] = (greeting + paragraphs[1]).strip()
         paragraphs.pop(0)
@@ -313,8 +306,63 @@ def postprocess_letter(text: str) -> str:
     return text
 
 
+def enforce_max_words(text: str, max_words: int) -> str:
+    """Hard clamp the letter to at most `max_words` words (P4).
+
+    Paragraph- and sentence-aware: keeps whole sentences (and whole
+    paragraphs) until adding the next sentence would exceed `max_words`.
+    This is the deterministic backstop for the soft length guidance in the
+    prompt / validator — the LLM occasionally overshoots the word budget,
+    and a letter that's too long reads worse than one trimmed at a clean
+    sentence boundary.
+
+    Behavior:
+      - Counts words with the same _WORD_RE used elsewhere, so the count
+        matches the validator's notion of "words".
+      - Never splits a sentence mid-way: the first kept sentence is always
+        retained whole, even if it alone exceeds the budget, so we never
+        emit a dangling fragment or an empty letter.
+      - Preserves \n\n paragraph boundaries for the kept content.
+      - No-op when the text is already within budget or max_words <= 0.
+    """
+    if not text or max_words <= 0:
+        return text
+    if len(_WORD_RE.findall(text)) <= max_words:
+        return text
+
+    paragraphs = _PARAGRAPH_SPLIT_RE.split(text)
+    kept_paragraphs: List[str] = []
+    running = 0
+    done = False
+    for paragraph in paragraphs:
+        if done:
+            break
+        stripped = paragraph.strip()
+        if not stripped:
+            continue
+        kept_sentences: List[str] = []
+        for sentence in _split_sentences(stripped):
+            words_here = len(_WORD_RE.findall(sentence))
+            if (kept_sentences or kept_paragraphs) and running + words_here > max_words:
+                done = True
+                break
+            kept_sentences.append(sentence)
+            running += words_here
+        if kept_sentences:
+            kept_paragraphs.append(" ".join(kept_sentences))
+    if not kept_paragraphs:
+        return text
+    clamped = "\n\n".join(kept_paragraphs)
+    logger.debug(
+        "enforce_max_words: clamped letter to %d/%d words",
+        len(_WORD_RE.findall(clamped)), max_words,
+    )
+    return clamped
+
+
 __all__ = [
     "postprocess_letter",
+    "enforce_max_words",
     "strip_meta_and_signature",
     "strip_years_opener",
     "strip_stack_dump",

@@ -10,13 +10,21 @@ company name (English names preserved), industry, or tech stack. If no project
 is selected (low-confidence / universal mode) we fall back to industry-neutral
 hooks that still avoid "X+ years" framing.
 
-API: `select_openers(facts, selected_project, used_starts, n=2)` returns up to
-`n` opener templates. Tracking of recently-used openers is owned by the pipeline.
+v4 (P3): the chosen achievement is no longer hard-coded to achievements[0].
+`select_openers` now receives the vacancy text and picks the achievement most
+relevant to it (with a deterministic per-batch rotation fallback), so the first
+sentence and angle vary from vacancy to vacancy instead of repeating the same
+gRPC opener.
+
+API: `select_openers(facts, selected_project, used_starts, n=2, vacancy_text="",
+rotate=0)` returns up to `n` opener templates. Tracking of recently-used openers
+is owned by the pipeline.
 """
 
 from __future__ import annotations
 
 import random
+import re
 from typing import List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:  # avoid a runtime import cycle with facts.py
@@ -86,16 +94,47 @@ def _format_top_tech(tech_stack: List[str]) -> str:
     return ", ".join(items[:3])
 
 
+def _pick_achievement(
+    project: "ProjectFacts",
+    vacancy_text: str,
+    rotate: int,
+) -> str:
+    """Choose the achievement most relevant to the vacancy.
+
+    Scores each achievement by how many of its 4+ character words appear in the
+    vacancy text; ties prefer the earlier achievement. If no achievement shares
+    any word with the vacancy, rotate deterministically by batch position so
+    different vacancies don't all open on achievements[0].
+    """
+    achs = [a.strip() for a in (project.achievements or []) if a and a.strip()]
+    if not achs:
+        return ""
+    vt = (vacancy_text or "").lower()
+
+    def score(a: str) -> int:
+        words = {w for w in re.findall(r"[a-zа-яё0-9]+", a.lower()) if len(w) >= 4}
+        return sum(1 for w in words if w in vt)
+
+    best = max(range(len(achs)), key=lambda i: (score(achs[i]), -i))
+    if score(achs[best]) == 0:
+        best = rotate % len(achs)
+    return achs[best]
+
+
 def _render_project_template(
     template: str,
     *,
     project: "ProjectFacts",
+    top_ach: Optional[str] = None,
 ) -> Optional[str]:
     """Fill a project template. Returns None if any required slot is empty."""
     company = (project.company or "").strip()
     industry = (project.industry or "").strip()
     project_name = (project.name or "").strip()
-    top_ach = project.achievements[0].strip() if project.achievements else ""
+    if top_ach is None:
+        top_ach = project.achievements[0].strip() if project.achievements else ""
+    else:
+        top_ach = (top_ach or "").strip()
     top_tech = _format_top_tech(list(project.tech_stack))
 
     needs_company = "{company}" in template
@@ -127,18 +166,23 @@ def select_openers(
     used_starts: List[str],
     *,
     n: int = 2,
+    vacancy_text: str = "",
+    rotate: int = 0,
 ) -> List[str]:
     """Pick `n` opener candidates.
 
     Strategy:
       1. If `selected_project` resolves and has a top achievement → use
-         project templates that splice the achievement into the first sentence.
+         project templates that splice the vacancy-relevant achievement into
+         the first sentence (see `_pick_achievement`).
       2. If the project resolves but has no achievement → use project-fallback
          templates that anchor on the project name + tech.
       3. If no project resolves → use generic role-anchored templates.
 
     In all cases we avoid years-of-experience framing.
 
+    `vacancy_text` biases which achievement is spliced; `rotate` provides a
+    deterministic fallback when no achievement matches the vacancy.
     `used_starts` is consulted to prefer openers whose rendered form hasn't
     been used recently in this batch.
     """
@@ -147,9 +191,10 @@ def select_openers(
     pool: List[str] = []
 
     if project is not None:
+        chosen_ach = _pick_achievement(project, vacancy_text, rotate)
         if project.achievements:
             for tpl in _PROJECT_TEMPLATES:
-                rendered = _render_project_template(tpl, project=project)
+                rendered = _render_project_template(tpl, project=project, top_ach=chosen_ach)
                 if rendered:
                     pool.append(rendered)
         if not pool:
