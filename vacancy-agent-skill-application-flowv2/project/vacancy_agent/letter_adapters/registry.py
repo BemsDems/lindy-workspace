@@ -8,15 +8,40 @@ from vacancy_agent.letter_adapters.cover_letter_gen import CoverLetterGenAdapter
 from vacancy_agent.letter_adapters.simple import SimpleTemplateLetterAdapter
 
 
+# Location of the cover-letter-genv2v2 skill bundled in this repository.
+# PROJECT_ROOT points at .../vacancy-agent-skill-application-flowv2/project, so the
+# repository root is two levels up and the skill lives at <repo-root>/cover-letter-genv2v2.
+# Using a repo-relative path keeps generation in sync with the version-controlled
+# skill instead of a stale, machine-specific copy.
+_REPO_ROOT = PROJECT_ROOT.parent.parent
+_BUNDLED_SKILL_PATH = _REPO_ROOT / "cover-letter-genv2v2"
+
+# Legacy absolute path for older local checkouts; kept only as a last-resort fallback.
+_LEGACY_SKILL_PATH = Path(
+    "/Users/pipyao/.openclaw/workspace-coding/skills/cover-letter-genv2v2"
+)
+
+
 def _candidate_cover_letter_gen_paths() -> list[Path]:
     paths: list[Path] = []
 
+    # 1. Explicit override via COVER_LETTER_GEN_PATH always wins.
     if settings.cover_letter_gen_path:
         paths.append(Path(settings.cover_letter_gen_path))
-    else:
-        paths.append(Path("/Users/pipyao/.openclaw/workspace-coding/skills/cover-letter-genv2v2"))
 
-    return paths
+    # 2. The skill bundled in this repository (stays in sync via git).
+    paths.append(_BUNDLED_SKILL_PATH)
+
+    # 3. Legacy absolute path, kept as a last-resort fallback.
+    paths.append(_LEGACY_SKILL_PATH)
+
+    # Deduplicate while preserving order.
+    unique_paths: list[Path] = []
+    for path in paths:
+        if path not in unique_paths:
+            unique_paths.append(path)
+
+    return unique_paths
 
 
 def get_letter_adapter() -> LetterAdapter:
@@ -46,7 +71,8 @@ def get_letter_adapter() -> LetterAdapter:
     checked = "\n".join(f"- {p}" for p in _candidate_cover_letter_gen_paths())
     raise FileNotFoundError(
         "cover-letter-genv2v2 not found. "
-        "Set COVER_LETTER_GEN_PATH to /Users/pipyao/.openclaw/workspace-coding/skills/cover-letter-genv2v2. "
+        "By default it is expected at <repo-root>/cover-letter-genv2v2; "
+        "override the location with COVER_LETTER_GEN_PATH. "
         "Checked:\n" + checked
     )
 
