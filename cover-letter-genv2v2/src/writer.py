@@ -204,7 +204,7 @@ def _build_greeting(vacancy_company: str) -> str:
 	"""Build the exact greeting line the model must use."""
 	company = (vacancy_company or "").strip()
 	if company:
-		return f"Здравствуйте, {company}!"
+		return f"Здравствуйте, команда {company}!"
 	return "Здравствуйте!"
 
 
