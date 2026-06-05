@@ -70,7 +70,7 @@ _SIGNATURE_RE = re.compile(
 # LLM bias toward the canned "3+ года Flutter-разработки" opener despite
 # explicit prompt-level prohibitions in writer.FINALIZER_SYSTEM.
 _YEARS_OPENER_RE = re.compile(
-    r"^\s*\d+\s*\+?\s*(?:лет|года|год)\b",
+    r"^\s*(?:\d+\s*\+?|более|менее|около|свыше|больше|почти|полтора|полутора)\s*(?:лет|года|год)\b",
     re.IGNORECASE,
 )
 
