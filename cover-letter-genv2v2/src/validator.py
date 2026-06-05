@@ -201,7 +201,7 @@ _NUMBER_RE = re.compile(r"(?<!\w)(\d[\d\s.,]{0,12}\d|\d)\+?(?!\w)")
 # the '+' once more outside the group (the previous regex did that and just
 # fired an unnecessary extra optional match).
 _YEARS_RE = re.compile(
-  r"(?i)\b(\d+\+?|один|два|три|четыре|пять|шесть|семь|восемь|девять|десять)"
+  r"(?i)\b(\d+\+?|более|менее|около|свыше|больше|почти|полтора|полутора|один|два|три|четыре|пять|шесть|семь|восемь|девять|десять)"
   r"\s+"
   r"(год(?:а|ов)?|лет|г\.?)\b"
 )
